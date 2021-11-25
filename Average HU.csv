@@ -1,0 +1,22 @@
+Substance,HU
+Adipose Low,-120
+Adipose High,-90
+Air Low, -2000
+Air High,-1000
+Bone Cortical Low,300
+Bone Cortical High,1900
+Brain Low,15
+Brain High,20
+Lung Low,-700
+Lung High,-600
+Muscle Low,35
+Muscle High,55
+Soft tissue,25
+Titanium Low,2300
+Titanium High,5000
+Water Low,-5
+Water High,5
+
+
+
+
