@@ -6,6 +6,7 @@ from PIL import Image, ImageDraw
 import pylab as pl
 from natsort import natsorted
 from skimage import feature, measure
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import cv2
 import scipy
 from scipy import ndimage
@@ -147,7 +148,7 @@ def find_body(contours):
                 zip(*sorted(zip(vol_contours, body_contours))))
         body_contours.pop(-1) # body is out!
     conto_e = time.time()
-    print('Find body countor time: %s' % (conto_e-conto_s))
+    #print('Find body countor time: %s' % (conto_e-conto_s))
     return body_contours # only lungs left !!!
 
 
@@ -175,7 +176,7 @@ def create_mask_from_polygon(image, contours):
 
     body_mask[body_mask > 1] = 1  # sanity check to make 100% sure that the mask is binary
     cont_mask_e = time.time()
-    print('countor mask cal time: %s' % (cont_mask_e-cont_mask_s))
+    #print('countor mask cal time: %s' % (cont_mask_e-cont_mask_s))
     return body_mask.T
 
 
@@ -206,7 +207,7 @@ def cone(p0, p1, R0, R1):
     # make unit vector perpendicular to v and n1
     n2 = np.cross(v, n1)
     # surface ranges over t from 0 to length of axis and 0 to 2*pi
-    n = 150
+    n = 300
     t = np.linspace(0, mag, n)
     theta = np.linspace(0, 2 * np.pi, n)
     # use meshgrid to make 2d arrays
@@ -215,6 +216,7 @@ def cone(p0, p1, R0, R1):
     # generate coordinates for surface
     X, Y, Z = [p0[i] + v[i] * t + R *
                np.sin(theta) * n1[i] + R * np.cos(theta) * n2[i] for i in [0, 1, 2]]
+    cone_e = time.time()
     #ax.plot_surface(X, Y, Z, color=color, linewidth=0, antialiased=False)
     invAffinMatrix = np.linalg.inv(AffinMatrix)
     X_f = X.flatten
@@ -225,12 +227,13 @@ def cone(p0, p1, R0, R1):
     coorArray[:, 2] = Z.flatten()
     coorArray[:, 3] = ones
     pixcoorArray = np.zeros(coorArray.shape)
-    for k in range(0, len(ones)):
-        pixcoorArray[k, :] = np.round(np.matmul(invAffinMatrix, coorArray[k, :]))
-
+    #for k in range(0, len(ones)):
+    #    pixcoorArray[k, :] = np.round(np.matmul(invAffinMatrix, coorArray[k, :]))
+    pixcoorArray = np.round(coorArray.dot(invAffinMatrix.T)[:,:-1])
     pixcoorArray[:, 2][pixcoorArray[:, 2] >= len(lstFilesDCM)] = len(lstFilesDCM) - 1
-    cone_e = time.time()
-    print('cone place cal time: %s' % (cone_e-cone_s))
+    cone_d = time.time()
+    print('cone corr place cal time: %s' % (cone_e-cone_s))
+    print('cone corr to voxal', cone_d-cone_e)
     return pixcoorArray
 
 
@@ -241,6 +244,103 @@ def voxal_ray_distance(ArrayShape, angle, RefDs):
     return DistArray
 
 
+def ref_point_for_cone_rotation(slice, columnind, sliceind, distolow, distocenter,distoupper, distbasetoskin, affine, rowspacing):
+    s = time.time()
+    edges = measure.find_contours(slice, level=-250, fully_connected='low', positive_orientation='high')
+    bodycontour = find_body(edges)
+    body = create_mask_from_polygon(slice, bodycontour)
+    rowind = np.argwhere(body[:, columnind] == 1)[0]
+
+    # points which define cone after rotation
+    #basevoxalVec = np.array(
+    #    (int(np.round(rowind - distfromskin / rowpixelspacing)), clickpointcolumn, clickedsliceind, 1))
+    #apexupvoxalvec = np.array(
+    #    (int(np.round(rowind + skintouppertarget / rowpixelspacing)), clickpointcolumn, clickedsliceind, 1))
+    #apexcentervoxalvec = np.array(
+    #    (int(np.round(rowind + skintotargetcenter / rowpixelspacing)), clickpointcolumn, clickedsliceind, 1))
+    #apexlowvoxalvec = np.array(
+    #    (int(np.round(rowind + skintolowertarget / rowpixelspacing)), clickpointcolumn, clickedsliceind, 1))
+
+    # pixal world to patient coordinate system
+    centerbasepoint = voxal_to_patient(affine, np.array(
+        (int(np.round(rowind - distbasetoskin / rowspacing)), columnind, sliceind, 1)))[0:3]
+    upperapexpoint = voxal_to_patient(affine, np.array(
+        (int(np.round(rowind + distoupper / rowspacing)), columnind, sliceind, 1)))[0:3]
+    centeralapexpoint = voxal_to_patient(affine, np.array(
+        (int(np.round(rowind + distocenter / rowspacing)), columnind, sliceind, 1)))[0:3]
+    lowerapexpoint = voxal_to_patient(affine, np.array(
+        (int(np.round(rowind + distolow / rowspacing)), columnind, sliceind, 1)))[0:3]
+
+    f = time.time()
+    print('cone based image time', f-s)
+    return centerbasepoint, centeralapexpoint
+
+
+def cone_transformation_matrix(basepoints, rotatepoints):
+    l = len(basepoints)
+    B = np.vstack([np.transpose(ins), np.ones(l)])
+    D = 1.0 / np.linalg.det(B)
+    entry = lambda r, d: np.linalg.det(np.delete(np.vstack([r, B]), (d + 1), axis=0))
+    M = [[(-1) ** i * D * entry(R, i) for i in range(l)] for R in np.transpose(rotatepoints)]
+    A, t = np.hsplit(np.array(M), [l - 1])
+    t = np.transpose(t)[0]
+
+'''
+# find the skin
+def find_high_Patient_volume_slice(vol):
+    s = time.time()
+    slice_vol = []
+    for i in range(0, np.shape(vol)[0]-1):
+        edges = measure.find_contours(vol[i, :, :], level=-250, fully_connected='low',
+                                      positive_orientation='high')
+        bodycontour = find_body(edges)
+        body = create_mask_from_polygon(vol[i, :, :], bodycontour)
+        slice_vol.append(np.count_nonzero(body == 1))
+    maxvol = max(slice_vol)
+    f = time.time()
+    print('time to find largest slice in volume', f-s)
+    return slice_vol.index(maxvol)
+
+
+def row_and_col_indices_for_volume_cupping(vol, largest_slice_ind):
+    s = time.time()
+    edges = measure.find_contours(vol[largest_slice_ind, :, :], level=-250, fully_connected='low', positive_orientation='high')
+    bodycontour = find_body(edges)
+    body = create_mask_from_polygon(vol[largest_slice_ind, :, :], bodycontour)
+    first_column_volume_encounter = np.min([i for i in first_nonzero(body, 0) if i > 0])
+    first_row_volume_encounter = np.min([i for i in first_nonzero(body, 1) if i > 0])
+    last_column_volume_encounter = np.max(last_nonzero(body, 0))
+    last_row_volume_encounter = np.max(last_nonzero(body, 1))
+    if last_column_volume_encounter >= np.shape(ArrayDicomHu)[2]-25:
+        last_column_volume_encounter = np.shape(ArrayDicomHu)[2]-25
+    if last_row_volume_encounter >= np.shape(ArrayDicomHu)[1]-25:
+        last_row_volume_encounter = np.shape(ArrayDicomHu)[1]-25
+    if first_row_volume_encounter <= 25:
+        first_row_volume_encounter = 25
+    if first_column_volume_encounter <= 25:
+        first_column_volume_encounter = 25
+    f = time.time()
+    print('volume chopping time', f-s)
+    return vol[:, first_column_volume_encounter-25:last_column_volume_encounter+25, first_row_volume_encounter-25:last_row_volume_encounter+25]
+
+
+def first_nonzero(arr, axis, invalid_val=-1):
+    mask = arr!=0
+    return np.where(mask.any(axis=axis), mask.argmax(axis=axis), invalid_val)
+
+
+def last_nonzero(arr, axis, invalid_val=-1):
+    mask = arr!=0
+    val = arr.shape[axis] - np.flip(mask, axis=axis).argmax(axis=axis) - 1
+    return np.where(mask.any(axis=axis), val,  invalid_val)
+
+
+largest_slice = find_high_Patient_volume_slice(ArrayDicomHu)
+chopedvol = row_and_col_indices_for_volume_cupping(ArrayDicomHu, largest_slice)
+print('chopped volume size', np.shape(chopedvol))
+plt.imshow(chopedvol[largest_slice, :, :], cmap='gray')
+plt.show()
+'''
 R = 44 #mm
 distfromskin = 13 #mm
 skintouppertarget = 47 #mm
@@ -252,30 +352,13 @@ anglewillclick = -10
 
 AffinMatrix = a_multi_matrix()
 
-rotvol = volume_rotation(ArrayDicomHu[clickedsliceind-R-5:clickedsliceind+R+5, :, :], anglewillclick) #rotate volume to the angle user chose
+rotslice = ndimage.rotate(ArrayDicomHu[clickedsliceind, :, :], float(anglewillclick), reshape=False, mode='constant', cval=-1000) #rotate volume to the angle user chose
 index_new_vol_clicked_slice = int((2*R+10)/2)
-# find the skin
-edges = measure.find_contours(rotvol[index_new_vol_clicked_slice, :, :], level=-250, fully_connected='low', positive_orientation='high')
-bodycontour = find_body(edges)
-body = create_mask_from_polygon(rotvol[index_new_vol_clicked_slice, :, :], bodycontour)
-rowind = np.argwhere(body[:, clickpointcolumn] == 1)[0]
 rowpixelspacing = RefDsFirst.PixelSpacing[0]
-def find_full_body_contour(vol, isovalue):
-    verts, faces, normals, values = measure.marching_cubes(volume=vol, level=isovalue)
+#refrence points for cone calculation
+coneimagebase_b, coneimagebase_c = ref_point_for_cone_rotation(ArrayDicomHu[clickedsliceind, :, :], clickpointcolumn, clickedsliceind, skintolowertarget, skintotargetcenter, skintouppertarget, distfromskin, AffinMatrix,rowpixelspacing)
+conerotimagebase_b, conerotimagebase_c  = ref_point_for_cone_rotation(rotslice, clickpointcolumn, clickedsliceind, skintolowertarget, skintotargetcenter, skintouppertarget, distfromskin, AffinMatrix,rowpixelspacing)
 
-
-
-#vectors which define cone
-basevoxalVec = np.array((int(np.round(rowind-distfromskin/rowpixelspacing)), clickpointcolumn, clickedsliceind, 1))
-apexupvoxalvec = np.array((int(np.round(rowind+skintouppertarget/rowpixelspacing)), clickpointcolumn, clickedsliceind, 1))
-apexcentervoxalvec = np.array((int(np.round(rowind+skintotargetcenter/rowpixelspacing)), clickpointcolumn, clickedsliceind, 1))
-apexlowvoxalvec = np.array((int(np.round(rowind+skintolowertarget/rowpixelspacing)), clickpointcolumn, clickedsliceind, 1))
-
-#pixal world to patient coordinate system
-centerbasepoint = voxal_to_patient(AffinMatrix, np.array((int(np.round(rowind-distfromskin/rowpixelspacing)), clickpointcolumn, clickedsliceind, 1)))[0:3]
-upperapexpoint = voxal_to_patient(AffinMatrix, np.array((int(np.round(rowind+skintouppertarget/rowpixelspacing)), clickpointcolumn, clickedsliceind, 1)))[0:3]
-centeralapexpoint = voxal_to_patient(AffinMatrix, np.array((int(np.round(rowind+skintotargetcenter/rowpixelspacing)), clickpointcolumn, clickedsliceind, 1)))[0:3]
-lowerapexpoint = voxal_to_patient(AffinMatrix, np.array((int(np.round(rowind+skintolowertarget/rowpixelspacing)), clickpointcolumn, clickedsliceind, 1)))[0:3]
 
 #calculate points for cone position after rotation
 #centerbasepoint[1], centerbasepoint[0] = rot(centerbasepoint[1], centerbasepoint[0], angle=-10)
@@ -286,15 +369,19 @@ lowerapexpoint = voxal_to_patient(AffinMatrix, np.array((int(np.round(rowind+ski
 #lowercne = cone(lowerapexpoint, centerbasepoint, 0, R, 'green')
 
 #cone coordinates
-centercone = cone(centeralapexpoint, centerbasepoint, 0, R)
-uppercone = cone(upperapexpoint, centerbasepoint, 0, R)
-lowercone = cone(lowerapexpoint,centerbasepoint, 0, R)
+centercone = cone(coneimagebase_c, coneimagebase_b, 0, R)
+#uppercone = cone(upperapexpoint, centerbasepoint, 0, R)
+#lowercone = cone(lowerapexpoint,centerbasepoint, 0, R)
 
+conevol = np.full((ArrayDicomHu.shape), 0)
 cone_imp_s = time.time()
-rotvol[centercone[:, 2].astype(int), centercone[:, 0].astype(int), centercone[:, 1].astype(int)] = 6000
-rotvol[uppercone[:, 2].astype(int), uppercone[:, 0].astype(int), uppercone[:, 1].astype(int)] = 6000
-rotvol[lowercone[:, 2].astype(int), lowercone[:, 0].astype(int), lowercone[:, 1].astype(int)] = 6000
+ArrayDicomHu[centercone[:, 2].astype(int), centercone[:, 0].astype(int), centercone[:, 1].astype(int)] = 6000
+#conevol[uppercone[:, 2].astype(int), uppercone[:, 0].astype(int), uppercone[:, 1].astype(int)] = 6000
+#conevol[lowercone[:, 2].astype(int), lowercone[:, 0].astype(int), lowercone[:, 1].astype(int)] = 6000
 
+#rotcone = volume_rotation(conevol, -anglewillclick)
+#CTwithcone = ArrayDicomHu + rotcone
+'''
 wedge1 = Wedge((239, 239), 1, 0, 360, width=0.01)
 wedge2 = Wedge((239, 239), 2, 0, 360, width=0.01)
 
@@ -312,16 +399,41 @@ ax1.imshow(rotvol[index_new_vol_clicked_slice, :, :].squeeze(), cmap='gray')
 ax2.imshow(np.rot90(rotvol[:, :, index_new_vol_clicked_slice].squeeze(), k=3), cmap='gray') # 150,512
 ax3.imshow(rotvol[:, int(np.round(rowind+skintotargetcenter/rowpixelspacing)), :].squeeze(), cmap='gray') #150,512
 plt.show()
-'''
+
+
 edges = measure.find_contours(ArrayDicomHu[145, :, :], level=-250, fully_connected='low', positive_orientation='high')
 bodycontour = find_body(edges)
 body = create_mask_from_polygon(ArrayDicomHu[145, :, :], bodycontour)
 rowind = np.argwhere(body[:, columnind]==1)[0]
 plt.imshow(body)
+'''
+#find affine transform matrix
+# input data
+ins = [[1, 1], [2, 3], [3, 2]]  # <- points
+out = [[0, 2], [1, 2], [-2, -1]] # <- mapped to
+# calculations
+l = len(ins)
+B = np.vstack([np.transpose(ins), np.ones(l)])
+D = 1.0 / np.linalg.det(B)
+entry = lambda r,d: np.linalg.det(np.delete(np.vstack([r, B]), (d+1), axis=0))
+M = [[(-1)**i * D * entry(R, i) for i in range(l)] for R in np.transpose(out)]
+A, t = np.hsplit(np.array(M), [l-1])
+t = np.transpose(t)[0]
+# output
+print("Affine transformation matrix:\n", A)
+print("Affine transformation translation vector:\n", t)
+# unittests
+print("TESTING:")
+for p, P in zip(np.array(ins), np.array(out)):
+  image_p = np.dot(A, p) + t
+  result = "[OK]" if np.allclose(image_p, P) else "[ERROR]"
+  print(p, " mapped to: ", image_p, " ; expected: ", P, result)
+  
+
 
 
 #slice = ArrayDicomHu[145, :, :]
 #slice [slice < -60] = -60
 #plt.imshow(edged)
+plt.imshow(ArrayDicomHu[clickedsliceind, :, :], cmap='gray')
 plt.show()
-'''

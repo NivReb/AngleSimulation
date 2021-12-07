@@ -1,6 +1,7 @@
 import numpy as np
 import pydicom as dcm
 import matplotlib.pyplot as plt
+import skimage.draw
 from matplotlib.gridspec import GridSpec
 import os
 import pathlib
@@ -21,6 +22,7 @@ from pathlib import Path
 from functools import partial
 from PIL import Image, ImageDraw
 from skimage import feature, measure
+from skimage.draw import circle_perimeter, line
 from scipy.spatial import ConvexHull
 from scipy.linalg import norm
 startIn = time.time()
@@ -30,10 +32,14 @@ class IndexTracker:
     def __init__(self, ax, drr_volume, title):
         self.ax = ax # axes for ploting
         self.volume = drr_volume # 3D numpy array contains 2D processed images after generating DRR in specified angles.
+        #self.volumetarget = drr_volume
         self.slices, rows, cols = drr_volume.shape
         self.ind = self.slices//2
         self.im = ax.imshow(self.volume[self.ind, :, :], cmap='gray')# , extent=[0, RefDsFirst.Columns * RefDsFirst.PixelSpacing[1], 0, rows * RefDsFirst.PixelSpacing[0]])
         self.title = title
+        self.targetarray = np.zeros(np.shape(self.volume[self.ind, :, :]))
+        self.imageindexkeeper = self.ind # saves image index after click on target
+        #self.imagetargetarray = drr_volume #volume to add target markers.
         ax.set_title(self.title + '' + 'Angle %s [Degrees]' % Angle[self.ind])
         ax.title.set_color('white')
         ax.set_ylabel('mm')
@@ -75,6 +81,7 @@ class IndexTracker:
                     Update Image according to user scrolling between images
         :return:
         """
+
         self.im.set_data(self.volume[self.ind, :, :])
         self.ax.set_title(self.title + ' ' + 'Angle %s [degrees]' % Angle[self.ind])
         self.im.axes.figure.canvas.draw()
@@ -103,10 +110,22 @@ class IndexTracker:
                     white cross at click coordinates
                     and update image.
         """
-        imagewithtarget = self.volume[self.ind, :, :]
-        imagewithtarget[row, column-5:column+5] = 6000
-        imagewithtarget[row-5:row+5, column] = 6000
-        self.im.set_data(imagewithtarget)
+        if np.any(self.targetarray):
+            self.volume[self.imageindexkeeper, :, :] = self.volume[self.imageindexkeeper, :, :] - self.targetarray
+        else:
+            pass
+        self.targetarray = np.zeros(np.shape(self.volume[self.ind, :, :]))
+        self.imageindexkeeper = self.ind
+        upperringradius = (30.5/2) # in units mm
+        lowerringradius = 25.5/2 # in units mm
+        rowlowerring, columnlowerring = skimage.draw.circle_perimeter(row, column, int(lowerringradius/RefDsFirst.PixelSpacing[0]))
+        rowupperring, columnupperring = skimage.draw.circle_perimeter(row, column, int(upperringradius/RefDsFirst.PixelSpacing[0]))
+        rowlinetotarget, columnlinetotarget = skimage.draw.line(rowlowerring[0], columnlowerring[0], row, column)
+        self.targetarray[rowlowerring, columnlowerring] = 6000
+        self.targetarray[rowupperring, columnupperring] = 6000
+        self.targetarray[rowlinetotarget, columnlinetotarget] = 6000
+        self.volume[self.imageindexkeeper, :, :] = self.volume[self.imageindexkeeper, :, :] + self.targetarray
+        self.im.set_data(self.volume[self.imageindexkeeper, :, :])
         self.im.axes.figure.canvas.draw()
 
 
@@ -121,24 +140,27 @@ class cone:
     skintouppertarget = 47  # mm
     skintotargetcenter = 70.5  # mm
     skintolowertarget = 94  # mm
+    gelpadthin = 30 # mm
+    gelpadThick = 45 # mm
 
     def __init__(self, ct_volume, axAxial, axSagittal, axCoronal, indTracker):
         self.indexTracker = indTracker
-        self.vol = ct_volume
-        self.volcone = ct_volume
-        #self.axAxial = axAxial
-        #self.axSagittal = axSagittal
-        #self.axAP = axCoronal
-        #self.volshape = ct_volume.shape
-        self.sliceind = self.vol.shape[0]//2
-        self.columnind = self.vol.shape[2]//2
-        self.rowind = self.vol.shape[1]//2
+        # expanding volume for cone accommodation
+        s, c, r = ct_volume.shape
+        self.data_vol = np.full((s,c+cone.gelpadThick,r+20), -1000)
+        self.data_vol[:, 44:44+c, 9:9+r] = ct_volume
+
+        self.conevol = np.zeros(self.data_vol.shape) #volum in the size of expanded vol that will accomodate cone.
+        self.rotvol = ct_volume
+        self.sliceind = self.data_vol.shape[0]//2
+        self.columnind = self.data_vol.shape[2]//2
+        self.rowind = self.data_vol.shape[1]//2
         self.AffinMatrix = self.a_multi_matrix()
         self.invAffinMatrix = np.linalg.inv(self.AffinMatrix)
         self.rowpixelspacing = RefDsFirst.PixelSpacing[0]
-        self.imAxial = axAxial.imshow(self.vol[self.sliceind, :, :], cmap='gray')
-        self.imSagittal = axSagittal.imshow(np.rot90(self.vol[:, :, self.columnind], k=3), cmap='gray')
-        self.imCoronal = axCoronal.imshow(self.vol[:, self.rowind, :], cmap='gray')
+        self.imAxial = axAxial.imshow(self.data_vol[self.sliceind, :, :], cmap='gray')
+        self.imSagittal = axSagittal.imshow(np.rot90(self.data_vol[:, :, self.columnind], k=3), cmap='gray')
+        self.imCoronal = axCoronal.imshow(self.data_vol[:, self.rowind, :], cmap='gray')
 
 
         # Parameters and settings for CT images plots and sliders
@@ -170,7 +192,7 @@ class cone:
         #Axial Slider
         self.posAxial = axAxial.get_position()
         self.axAxial_slide = plt.axes([self.posAxial.x0, self.posAxial.y0-0.1, 0.2, 0.01])  # Slider position
-        self.AxialSlider = Slider(self.axAxial_slide, '', valmin=0, valmax=self.vol.shape[0]-1, valinit=self.sliceind, valstep=1,
+        self.AxialSlider = Slider(self.axAxial_slide, '', valmin=0, valmax=self.data_vol.shape[0]-1, valinit=self.sliceind, valstep=1,
                                     orientation='horizontal')  # slider range
         #ax_slide.set_xticks(np.arange(self.sliceind))
         self.AxialSlider.valtext.set_visible(True)
@@ -180,7 +202,7 @@ class cone:
         #Sagittal Slider
         self.posSagittal = axSagittal.get_position()
         self.axSagittal_slide = plt.axes([self.posSagittal.x0, self.posAxial.y0 - 0.1, 0.2, 0.01])  # Slider position
-        self.SagittalSlider = Slider(self.axSagittal_slide, '', valmin=0, valmax=self.vol.shape[2] - 1, valinit=self.columnind,
+        self.SagittalSlider = Slider(self.axSagittal_slide, '', valmin=0, valmax=self.data_vol.shape[2] - 1, valinit=self.columnind,
                                valstep=1,
                                orientation='horizontal')  # slider range
         # ax_slide.set_xticks(np.arange(self.sliceind))
@@ -192,7 +214,7 @@ class cone:
         self.posCoronal = axCoronal.get_position()
         self.axCoronal_slide = plt.axes(
             [self.posCoronal.x0, self.posCoronal.y0 - 0.1, 0.2, 0.01])  # Slider position
-        self.CoronalSlider = Slider(self.axCoronal_slide, '', valmin=0, valmax=self.vol.shape[1] - 1,
+        self.CoronalSlider = Slider(self.axCoronal_slide, '', valmin=0, valmax=self.data_vol.shape[1] - 1,
                                      valinit=self.rowind,
                                      valstep=1,
                                      orientation='horizontal')  # slider range
@@ -202,16 +224,13 @@ class cone:
         self.CoronalSlider.valtext.set_color('white')
         self.CoronalSlider.on_changed(self.update_slider_Coronal)
 
-
-
-
     def update_slider_Axial(self, val):
         """
                     Takes slider val and update CT image based on the val
         :param val: CT slice
         :return:
         """
-        self.imAxial.set_data(self.volcone[val, :, :].squeeze())
+        self.imAxial.set_data(self.data_vol[val, :, :].squeeze())
         fig.canvas.draw_idle()
 
     def update_slider_Sagittal(self, val):
@@ -220,7 +239,7 @@ class cone:
         :param val: CT slice
         :return:
         """
-        self.imSagittal.set_data(np.rot90(self.volcone[:, :, val].squeeze(), k=3))
+        self.imSagittal.set_data(np.rot90(self.data_vol[:, :, val].squeeze(), k=3))
         fig.canvas.draw_idle()
 
     def update_slider_Coronal(self, val):
@@ -229,7 +248,7 @@ class cone:
         :param val: CT slice
         :return:
         """
-        self.imAP.set_data(self.volcone[:, val, :].squeeze())
+        self.imCoronal.set_data(self.data_vol[:, val, :].squeeze())
         fig.canvas.draw_idle()
 
     def on_click(self, event):
@@ -242,6 +261,7 @@ class cone:
         # get the x and y pixel coords
 
         if event.button is MouseButton.LEFT and event.inaxes == self.indexTracker.ax:
+            s = time.time()
             self.angle = Angle[self.indexTracker.ind]
 
             x, y = event.x, event.y
@@ -250,42 +270,38 @@ class cone:
             self.sliceind = np.round(event.ydata)
             self.columnind = np.round(event.xdata)
             self.indexTracker.click_target_marking(self.sliceind.astype(int), self.columnind.astype(int))
-            #slicesinterval = np.array([self.sliceind.astype(int)-cone.R-5, self.sliceind.astype(int)+cone.R+5])
-            self.rotvol = self.volume_rotation(self.vol, self.angle)
-            self.rowind = self.find_skin_row_index() # find skin row index at target
+            # remove old cone after new click
+            if np.any(self.conevol):
+                self.data_vol = self.data_vol - self.conevol
+                self.conevol = np.zeros(self.data_vol.shape)
+            else:
+                pass
+
+            self.data_vol = self.volume_rotation(self.data_vol, self.angle)
+            #find skin row index after rotation with cutted volume
+            self.sliceforcontour = self.data_vol[self.sliceind.astype(int), :, :]
+            bodymaskclass = BodyMask(self.sliceforcontour)
+            bodymask = bodymaskclass.mask_body()
+            self.rowind = np.argwhere(bodymask[:, self.columnind.astype(int)] == 1)[0]
             base, up, center, low = self.cone_coordinates(self.rowind, self.columnind, self.sliceind) # cone points coordinates in patient coordinate system
             centercone = self.cone(center, base, 0, cone.R) # center cone indexes
             uppercone = self.cone(up, base, 0, cone.R)# upper cone indexes
             lowercone = self.cone(low, base, 0, cone.R)# lower cone indexes
-            self.volcone = self.cone_volume_integrate(self.rotvol, centercone, uppercone, lowercone)
-            self.update()
 
-            # print('disconnecting callback')
-    def find_skin_row_index(self):
-        """
-                    Takes user clicked slice.
-                    Find body edges.
-                    Find body contour.
-                    Create mask from body contour.
-                    Find the first row at clicked column intersecting mask.
-        :return: row click index
-        """
-        sliceforcontour = self.rotvol[self.sliceind.astype(int), :, :]
-        edges = measure.find_contours(sliceforcontour, level=-250, fully_connected='low',
-                                           positive_orientation='high') # marching square algorithm
-        bodycontour = self.find_body(edges)
-        body = self.create_mask_from_polygon(sliceforcontour, bodycontour)
-        rowind = np.argwhere(body[:, self.columnind.astype(int)] == 1)[0]
-        return rowind
+            self.conevol = self.cone_volume_integrate(self.conevol, centercone, uppercone, lowercone)
+            self.data_vol = self.data_vol + self.conevol
+            f = time.time()
+            print('click target cal time', f-s)
+            self.update()
 
     def update(self):
         """
                     With each user click update CT images with cone at clicked place.
         :return:
         """
-        self.imAxial.set_data(self.volcone[self.sliceind.astype(int), :, :].squeeze())
-        self.imSagittal.set_data(np.rot90(self.volcone[:, :, self.columnind.astype(int)].squeeze(), k=3))
-        self.imCoronal.set_data(self.volcone[:, int(np.round(self.rowind + cone.skintotargetcenter / self.rowpixelspacing)), :].squeeze())
+        self.imAxial.set_data(self.data_vol[self.sliceind.astype(int), :, :].squeeze())
+        self.imSagittal.set_data(np.rot90(self.data_vol[:, :, self.columnind.astype(int)].squeeze(), k=3))
+        self.imCoronal.set_data(self.data_vol[:, int(np.round(self.rowind + cone.skintotargetcenter / self.rowpixelspacing)), :].squeeze())
         self.imAxial.axes.figure.canvas.draw()
         self.imSagittal.axes.figure.canvas.draw()
         self.imCoronal.axes.figure.canvas.draw()
@@ -299,14 +315,14 @@ class cone:
         :param volume: CT volume after rotation in the angle user chose
         :return: CT volume after cones implementation
         """
-        center_cone[2, :, :][center_cone[2, :, :] >= len(lstFilesDCM)] = len(lstFilesDCM) - 1
-        upper_cone[2, :, :][upper_cone[2, :, :] >= len(lstFilesDCM)] = len(lstFilesDCM) - 1
-        lower_cone[2, :, :][lower_cone[2, :, :] >= len(lstFilesDCM)] = len(lstFilesDCM) - 1
-        volume[center_cone[2, :, :].astype(int), center_cone[0, :, :].astype(int), center_cone[1, :, :].astype(
+        center_cone[:, 2][center_cone[:, 2] >= len(lstFilesDCM)] = len(lstFilesDCM) - 1
+        upper_cone[:, 2][upper_cone[:, 2] >= len(lstFilesDCM)] = len(lstFilesDCM) - 1
+        lower_cone[:, 2][lower_cone[:, 2] >= len(lstFilesDCM)] = len(lstFilesDCM) - 1
+        volume[center_cone[:, 2].astype(int), center_cone[:, 0].astype(int), center_cone[:, 1].astype(
             int)] = 6000
-        volume[upper_cone[2, :, :].astype(int), upper_cone[0, :, :].astype(int), upper_cone[1, :, :].astype(
+        volume[upper_cone[:, 2].astype(int), upper_cone[:, 0].astype(int), upper_cone[:, 1].astype(
             int)] = 6000
-        volume[lower_cone[2, :, :].astype(int), lower_cone[0, :, :].astype(int), lower_cone[1, :, :].astype(
+        volume[lower_cone[:, 2].astype(int), lower_cone[:, 0].astype(int), lower_cone[:, 1].astype(
             int)] = 6000
         return volume
 
@@ -333,64 +349,9 @@ class cone:
              slice_ind, 1)))[0:3]
         return centerbasepoint, upperapexpoint, centeralapexpoint, lowerapexpoint
 
-    def find_body(self, contours):
-        """
-                    Chooses the contours that correspond to the body
-                    First, we exclude non-closed sets-contours
-                    Then we assume some min area and volume to exclude small contours
-
-                    Args:
-                        contours: all the detected contours
-
-                    Returns: contours that correspond to the body area
-                    """
-        self.body_contours = []
-        self.vol_contours = []
-
-        for contour in contours:
-            self.hull = ConvexHull(contour)
-
-            # set some constraints for the volume
-            if self.hull.volume > 20000:
-                self.body_contours.append(contour)
-                self.vol_contours.append(self.hull.volume)
-
-        # Discard non body contour
-        if len(self.body_contours) == 2:
-            return self.body_contours
-        elif len(self.body_contours) > 2:
-            self.vol_contours, self.body_contours = (list(t) for t in
-                    zip(*sorted(zip(self.vol_contours, self.body_contours))))
-            self.body_contours.pop(-1)
-        return self.body_contours  # only body left !!!
-
-    def create_mask_from_polygon(self, image, contours):
-        """
-                    Creates a binary mask with the dimensions of the image and
-                    converts the list of polygon-contours to binary masks and merges them together
-                    Args:
-                        image: the image that the contours refer to
-                        contours: list of contours
-
-                    Returns:
-
-                    """
-        body_mask = np.array(Image.new('L', image.shape, 0))
-        for contour in contours:
-            x = contour[:, 0]
-            y = contour[:, 1]
-            polygon_tuple = list(zip(x, y))
-            img = Image.new('L', image.shape, 0)
-            ImageDraw.Draw(img).polygon(polygon_tuple, outline=0, fill=1)
-            mask = np.array(img)
-            body_mask += mask
-
-        body_mask[body_mask > 1] = 1  # sanity check to make 100% sure that the mask is binary
-        return body_mask.T
-
     def a_multi_matrix(self):
         """
-                    Calculate the affine matrix for voxel to patient coordinate system transformation
+        Calculate the affine matrix for voxel to patient coordinate system transformation
         :return: 4x4 affine matrix based on DICOM data
         """
         orient_pat = np.zeros((3, 2))
@@ -424,7 +385,6 @@ class cone:
         voxel_location = np.matmul(affine_matrix, voxel_coordinates)
         return voxel_location
 
-
     def volume_rotation(self, vol, angle):
         """
 
@@ -432,7 +392,7 @@ class cone:
         :param angle: angle to rotate to
         :return: rotated volume
         """
-        rotatedVol = ndimage.rotate(vol, float(angle), axes=(1, 2), reshape=False, mode='constant', cval=0)
+        rotatedVol = ndimage.rotate(vol, float(angle), axes=(1, 2), reshape=False, mode='constant', cval=-1000)
         return rotatedVol
 
     def cone(self, p0, p1, R0, R1):
@@ -465,7 +425,7 @@ class cone:
         # make unit vector perpendicular to v and n1
         n2 = np.cross(v, n1)
         # surface ranges over t from 0 to length of axis and 0 to 2*pi
-        n = 250
+        n = 300
         t = np.linspace(0, mag, n)
         theta = np.linspace(0, 2 * np.pi, n)
         # use meshgrid to make 2d arrays
@@ -475,7 +435,14 @@ class cone:
         X, Y, Z = [p0[i] + v[i] * t + R *
                    np.sin(theta) * n1[i] + R * np.cos(theta) * n2[i] for i in [0, 1, 2]]
         # ax.plot_surface(X, Y, Z, color=color, linewidth=0, antialiased=False)
-
+        ones = np.full(n * n, 1)
+        coorArray = np.zeros((len(ones), 4))
+        coorArray[:, 0] = X.flatten()
+        coorArray[:, 1] = Y.flatten()
+        coorArray[:, 2] = Z.flatten()
+        coorArray[:, 3] = ones
+        pixcoorArray = np.round(coorArray.dot(self.invAffinMatrix.T)[:, :-1]) # calculate the transformation between patient coordinate system back to voxel coordinate system
+        '''
         ones = np.full(X.shape, 1)
         coorArray = np.zeros((4, len(ones), len(ones)))
         coorArray[0, :, :] = X
@@ -486,8 +453,85 @@ class cone:
         for k in range(0, len(ones)):
             for j in range(0, len(ones)):
                 pixcoorArray[:, k, j] = np.round(np.matmul(self.invAffinMatrix, coorArray[:, k, j]))
-
+        '''
         return pixcoorArray
+
+
+class BodyMask:
+    def __init__(self, slice):
+        self.slicetomask = slice
+
+    def mask_body(self):
+        """
+                    Takes user clicked slice.
+                    Find body edges.
+                    Find body contour.
+                    Create mask from body contour.
+                    Find the first row at clicked column intersecting mask.
+        :return: row click index
+        """
+        #sliceforcontour = self.rotvol[self.sliceind.astype(int), :, :]
+        edges = measure.find_contours(self.slicetomask, level=-250, fully_connected='low',
+                                           positive_orientation='high') # marching square algorithm
+        bodycontour = self.find_body(edges)
+        body = self.create_mask_from_polygon(self.slicetomask, bodycontour)
+        #rowind = np.argwhere(body[:, self.columnind.astype(int)] == 1)[0]
+        return body
+
+    def find_body(self, contours):
+        """
+                    Chooses the contours that correspond to the body
+                    First, we exclude non-closed sets-contours
+                    Then we assume some min area and volume to exclude small contours
+
+                    Args:
+                        contours: all the detected contours
+
+                    Returns: contours that correspond to the body area
+                    """
+        body_contours = []
+        vol_contours = []
+
+        for contour in contours:
+            hull = ConvexHull(contour)
+
+            # set some constraints for the volume
+            if hull.volume > 20000:
+                body_contours.append(contour)
+                vol_contours.append(hull.volume)
+
+        # Discard non body contour
+        if len(body_contours) == 2:
+            return body_contours
+        elif len(body_contours) > 2:
+            vol_contours, body_contours = (list(t) for t in
+                    zip(*sorted(zip(vol_contours, body_contours))))
+            body_contours.pop(-1)
+        return body_contours  # only body left !!!
+
+    def create_mask_from_polygon(self, image, contours):
+        """
+                    Creates a binary mask with the dimensions of the image and
+                    converts the list of polygon-contours to binary masks and merges them together
+                    Args:
+                        image: the image that the contours refer to
+                        contours: list of contours
+
+                    Returns:
+
+                    """
+        body_mask = np.array(Image.new('L', image.shape, 0))
+        for contour in contours:
+            x = contour[:, 0]
+            y = contour[:, 1]
+            polygon_tuple = list(zip(x, y))
+            img = Image.new('L', image.shape, 0)
+            ImageDraw.Draw(img).polygon(polygon_tuple, outline=0, fill=1)
+            mask = np.array(img)
+            body_mask += mask
+
+        body_mask[body_mask > 1] = 1  # sanity check to make 100% sure that the mask is binary
+        return body_mask.T
 
 
 def voxal_ray_distance(ArrayShape, angle, RefDs):
@@ -500,11 +544,11 @@ def voxal_ray_distance(ArrayShape, angle, RefDs):
     """
     #calculation the distance each ray passing through each voxal
     PixelSpacingRow = int(RefDs.PixelSpacing[0])/10
-    DistArray = np.full(ArrayShape, PixelSpacingRow*np.cos(angle))
+    DistArray = np.full(ArrayShape, PixelSpacingRow*np.cos(angle*np.pi/180))
     return DistArray
 
 
-def f_shared(angle, dtype, shape, RefDs):
+def f_shared(angle, dtype, shape, RefDs, airattcoeff):
     """
             Create shared memory space in which to save the volume data.
             Rotating volume.
@@ -519,14 +563,14 @@ def f_shared(angle, dtype, shape, RefDs):
     print(angle)
     sh = shared_memory.SharedMemory(name='ArrayDicomMuShared')
     ArrayDicomMu = np.ndarray(shape, dtype, buffer=sh.buf)
-    angle_base = ndimage.rotate(ArrayDicomMu, float(angle), axes=(1, 2), reshape=False, mode='constant', cval=0) # positive angles rotating counter clock wise
-    voxal_ray_distance(ArrayDicomMu.shape, angle, RefDs) # calculating the distance each ray passing through voxal
-    res = np.sum(np.exp(-1 * angle_base * voxalDist), axis=1)
+    angle_base = ndimage.rotate(ArrayDicomMu, float(angle), axes=(1, 2), reshape=False, mode='constant', cval=airattcoeff) # positive angles rotating counter clock wise
+    VoxalDist = voxal_ray_distance(ArrayDicomMu.shape, angle, RefDs) # calculating the distance each ray passing through voxal
+    res = np.sum(np.exp(-1 * angle_base * VoxalDist), axis=1)
     sh.close()
     return res
 
 
-def ap_drr(ArrayDicomMu, Angle):
+def ap_drr(ArrayDicomMu, Angle, airattcoeff):
     """
                 calculating for each defined Angle the DRR ( each angle calculated in different core).
                 stacking all images to 3D numpy array.
@@ -548,7 +592,7 @@ def ap_drr(ArrayDicomMu, Angle):
     shared_ArrayDicomMu[:] = ArrayDicomMu[:]
 
     with multiprocessing.Pool(multiprocessing.cpu_count()) as p:
-        angle_bases = p.map(partial(f_shared, dtype=ArrayDicomMu.dtype, shape=ArrayDicomMu.shape, RefDs=RefDsFirst), tasks)
+        angle_bases = p.map(partial(f_shared, dtype=ArrayDicomMu.dtype, shape=ArrayDicomMu.shape, RefDs=RefDsFirst, airattcoeff=airattcoeff), tasks)
     shm.close()
     shm.unlink()
         #need to ref SOPInstanceUID for quick load of already processed DICOMS
@@ -606,12 +650,12 @@ def data_to_dict(drr_vol, kVp, data_dict):
     :param data_dict: dictionary that will populate all the information
     :return:
     """
-    #ProcessedDicom = {}
-    #ProcessedDicom[str(RefDs.SOPInstanceUID)] = {str(kVp): {'APDRR': AP_DRR, 'MIP': MIP}}
-    if keys_exists(data_dict, str(RefDsFirst.SOPInstanceUID)):
-        data_dict[str(RefDsFirst.SOPInstanceUID)][str(kVp)] = {'APDRR': drr_vol}
+    if keys_exists(data_dict, str(RefDsFirst.SOPInstanceUID)): # if SOP Instance UID allready proccessed and at requested kVp data was'nt calculated insert that new kVp calculated data to dict ans json
+        data_dict[str(RefDsFirst.SOPInstanceUID)][str(kVp)] = {'DRR': drr_vol}
     else:
-        data_dict[str(RefDsFirst.SOPInstanceUID)] = {str(kVp): {'APDRR': drr_vol}}
+        data_dict[str(RefDsFirst.SOPInstanceUID)] = {}
+        data_dict[str(RefDsFirst.SOPInstanceUID)][str(kVp)] = {'DRR': drr_vol}
+        data_dict[str(RefDsFirst.SOPInstanceUID)]['HU'] = {'HounsfieldUnit': ArrayDicomHu}
     with open('%s.json' % RefDsFirst.SOPInstanceUID, 'w') as f:
         f.write(json.dumps(data_dict, default=convert))
 
@@ -638,20 +682,6 @@ def deconvert(json_data):
         if key == "$array":  # If the tag is correct,
             return np.array(value)  # cast back to array
     return json_data
-
-'''
-
-def mip(ArrayDicomHu, Angle):
-
-    MaxIntensityAngle = np.zeros((len(Angle), np.shape(ArrayDicomHu)[0], np.shape(ArrayDicomHu)[2]), dtype=int)
-    y = time.time()
-    for i in range(0, len(Angle)):
-        anglebase = ndimage.rotate(ArrayDicomHu, float(Angle[i]), axes=(1, 2), reshape=False, mode='constant', cval=0)
-        MaxIntensityAngle[i, :, :] = anglebase.max(axis=1)
-    e = time.time()
-    print('MIP Run Time is ', e - y)
-    return MaxIntensityAngle
-'''
 
 
 def linear_attenuation_coefficient_calculation(kVp):
@@ -745,11 +775,11 @@ def get_data(kVp):
         data_dict = json.loads(data, object_hook=deconvert)
         b = time.time()
         if keys_exists(data_dict, str(RefDsFirst.SOPInstanceUID), str(kVp)):
-            APData = data_dict[str(RefDsFirst.SOPInstanceUID)][str(kVp)]['APDRR']
-            #MIPData = data_dict[str(RefDs.SOPInstanceUID)][str(kVp)]['MIP']
+            APData = data_dict[str(RefDsFirst.SOPInstanceUID)][str(kVp)]['DRR']
+            HUdata = data_dict[str(RefDsFirst.SOPInstanceUID)]['HU']['HounsfieldUnit']
             v = time.time()
             print('Simulation Run time is', v - b)
-            return APData
+            return APData, HUdata
         else:
             APData = cal_data(kVp, data_dict)
             return APData
@@ -769,11 +799,12 @@ def cal_data(kVp, data_dict):
     HUtoMUkVp = linear_attenuation_coefficient_calculation(kVp)
     ArrayDicomMu = np.interp(ArrayDicomHu, HUtoMUkVp[:, 1],
                              HUtoMUkVp[:, 0])  # Array based on Linear attenuation coefficient
+    air_att_coeff = HUtoMUkVp[0, 0]
     o = time.time()
-    APDRR = ap_drr(ArrayDicomMu, Angle)
+    APDRR = ap_drr(ArrayDicomMu, Angle, air_att_coeff)
     v = time.time()
     print('Calculation Time is', v - o)
-    print('Simulation Run time is', v - b)
+    print('DRR calculation Run time is', v - b)
     data_to_dict(APDRR, kVp, data_dict)
     return APDRR
 
@@ -797,46 +828,95 @@ def ct_data_analysis(FilePath):
     lstFilesDCM = natsorted(lstFilesDCM)  # sorting the files in order
     RefDsLast = dcm.read_file(lstFilesDCM[len(lstFilesDCM) - 1])  # refrence file
     RefDsFirst = dcm.read_file(lstFilesDCM[0])
-    PatientPosition = RefDsFirst.PatientPosition
-    ConstPixelDims = (len(lstFilesDCM), int(RefDsFirst.Rows), int(RefDsFirst.Columns))
-    ArrayDicom = np.zeros(ConstPixelDims, dtype=RefDsFirst.pixel_array.dtype)
-    ArrayDicomHu = np.zeros(ConstPixelDims, dtype=RefDsFirst.pixel_array.dtype)
-    for filenameDCM in lstFilesDCM:
-        # read the file
-        ds = dcm.read_file(filenameDCM)
-        # store the raw image data
-        ArrayDicom[len(lstFilesDCM)-1-lstFilesDCM.index(filenameDCM), :, :] = ds.pixel_array # [149,:,:] slice where the head is
-
-    # rotate volume based on Patient Position DICOM attribute
-    if PatientPosition == 'HFS': # HFS - Head First Supine
-        ArrayDicomRot = np.rot90(ArrayDicom, k=2, axes=(1, 2))
-    elif PatientPosition == 'HFP': # HFP - Head First Prone
-        ArrayDicomRot = np.rot90(ArrayDicom, k=2, axes=(0, 2))
-    elif PatientPosition == 'FFP': # FFP - Feet First Prone
-        ArrayDicomRot = ArrayDicom
-    elif PatientPosition == 'FFS': # FFS - Feet First Supine
-        ArrayDicomRot = np.rot90(ArrayDicom, k=2, axes=(1, 2))
-    else:
-        ArrayDicomRot = ArrayDicom
-        print('Patient Position could not detect')
-
-    # converting to Hounsfield Unit
-    ArrayDicomHu = np.add(np.multiply(ArrayDicomRot, int(RefDsFirst.RescaleSlope)),
-                          int(RefDsFirst.RescaleIntercept))  # Array based on hounsfield Unit
-    ArrayDicomHu[ArrayDicomHu <= -1000] = -1000
-    #find contoure and delete access voxals
-    #edges = measure.find_contours(ArrayDicomHu[clickedsliceind, :, :], level=-250, fully_connected='low',
-                                  #positive_orientation='high')
 
     Angle = range(-30, 30)
     kVp = 60
     if os.path.isfile('/Users/nivravhon/PycharmProjects/pythoProject/%s.json' % RefDsFirst.SOPInstanceUID):
-        AP = get_data(kVp)
+        AP, ArrayDicomHu = get_data(kVp)
         return AP, ArrayDicomHu
     else:
+        PatientPosition = RefDsFirst.PatientPosition
+        ConstPixelDims = (len(lstFilesDCM), int(RefDsFirst.Rows), int(RefDsFirst.Columns))
+        ArrayDicom = np.zeros(ConstPixelDims, dtype=RefDsFirst.pixel_array.dtype)
+        ArrayDicomHu = np.zeros(ConstPixelDims, dtype=RefDsFirst.pixel_array.dtype)
+        for filenameDCM in lstFilesDCM:
+            # read the file
+            ds = dcm.read_file(filenameDCM)
+            # store the raw image data
+            ArrayDicom[len(lstFilesDCM) - 1 - lstFilesDCM.index(filenameDCM), :,
+            :] = ds.pixel_array  # [149,:,:] slice where the head is
+        # rotate volume based on Patient Position DICOM attribute
+        if PatientPosition == 'HFS':  # HFS - Head First Supine
+            ArrayDicomRot = np.rot90(ArrayDicom, k=2, axes=(1, 2))
+        elif PatientPosition == 'HFP':  # HFP - Head First Prone
+            ArrayDicomRot = np.rot90(ArrayDicom, k=2, axes=(0, 2))
+        elif PatientPosition == 'FFP':  # FFP - Feet First Prone
+            ArrayDicomRot = ArrayDicom
+        elif PatientPosition == 'FFS':  # FFS - Feet First Supine
+            ArrayDicomRot = np.rot90(ArrayDicom, k=2, axes=(1, 2))
+        else:
+            ArrayDicomRot = ArrayDicom
+            print('Patient Position could not detect')
+
+        # converting to Hounsfield Unit
+        ArrayDicomHu = np.add(np.multiply(ArrayDicomRot, int(RefDsFirst.RescaleSlope)),
+                              int(RefDsFirst.RescaleIntercept))  # Array based on hounsfield Unit
+        ArrayDicomHu[ArrayDicomHu <= -1000] = -1000
+        ArrayDicomHu = find_high_Patient_volume_slice(ArrayDicomHu)
         data_dict = {}
         AP = cal_data(kVp, data_dict)
         return AP, ArrayDicomHu
+
+def find_high_Patient_volume_slice(vol):
+    s = time.time()
+    slice_vol = []
+    for i in range(0, np.shape(vol)[0]-1):
+        #edges = measure.find_contours(vol[i, :, :], level=-250, fully_connected='low',
+                                      #positive_orientation='high')
+       # bodycontour = find_body(edges)
+        body = BodyMask(vol[i, :, :])
+        bodymask = body.mask_body()#create_mask_from_polygon(vol[i, :, :], bodycontour)
+        slice_vol.append(np.count_nonzero(bodymask == 1))
+    maxvol = max(slice_vol)
+    f = time.time()
+    highvolslice = slice_vol.index(maxvol)
+    print('time to find largest slice in volume', f-s)
+    return row_and_col_indices_for_volume_cupping(vol, highvolslice)
+
+
+def row_and_col_indices_for_volume_cupping(vol, largest_slice_ind):
+    s = time.time()
+    #edges = measure.find_contours(vol[largest_slice_ind, :, :], level=-250, fully_connected='low', positive_orientation='high')
+    #bodycontour = find_body(edges)
+    #body = create_mask_from_polygon(vol[largest_slice_ind, :, :], bodycontour)
+    body = BodyMask(vol[largest_slice_ind, :, :])
+    bodymask = body.mask_body()
+    first_column_volume_encounter = np.min([i for i in first_nonzero(bodymask, 0) if i > 0])
+    first_row_volume_encounter = np.min([i for i in first_nonzero(bodymask, 1) if i > 0])
+    last_column_volume_encounter = np.max(last_nonzero(bodymask, 0))
+    last_row_volume_encounter = np.max(last_nonzero(bodymask, 1))
+    #if last_column_volume_encounter >= np.shape(ArrayDicomHu)[2]-25:
+    #    last_column_volume_encounter = np.shape(ArrayDicomHu)[2]-25
+    #if last_row_volume_encounter >= np.shape(ArrayDicomHu)[1]-25:
+    #    last_row_volume_encounter = np.shape(ArrayDicomHu)[1]-25
+    #if first_row_volume_encounter <= 25:
+    #    first_row_volume_encounter = 25
+    #if first_column_volume_encounter <= 25:
+    #    first_column_volume_encounter = 25
+    f = time.time()
+    print('volume chopping time', f-s)
+    return vol[:, first_column_volume_encounter:last_column_volume_encounter, first_row_volume_encounter:last_row_volume_encounter]#vol[:, first_column_volume_encounter-25:last_column_volume_encounter+25, first_row_volume_encounter-25:last_row_volume_encounter+25]
+
+
+def first_nonzero(arr, axis, invalid_val=-1):
+    mask = arr!=0
+    return np.where(mask.any(axis=axis), mask.argmax(axis=axis), invalid_val)
+
+
+def last_nonzero(arr, axis, invalid_val=-1):
+    mask = arr!=0
+    val = arr.shape[axis] - np.flip(mask, axis=axis).argmax(axis=axis) - 1
+    return np.where(mask.any(axis=axis), val,  invalid_val)
 
 
 if __name__ == '__main__':
