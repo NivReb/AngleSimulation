@@ -315,9 +315,15 @@ class cone:
         :param volume: CT volume after rotation in the angle user chose
         :return: CT volume after cones implementation
         """
-        center_cone[:, 2][center_cone[:, 2] >= len(lstFilesDCM)] = len(lstFilesDCM) - 1
-        upper_cone[:, 2][upper_cone[:, 2] >= len(lstFilesDCM)] = len(lstFilesDCM) - 1
-        lower_cone[:, 2][lower_cone[:, 2] >= len(lstFilesDCM)] = len(lstFilesDCM) - 1
+        #center_cone[:, 0][center_cone[:, 0] >= len(lstFilesDCM)] = len(lstFilesDCM) - 1
+        #upper_cone[:, 0][upper_cone[:, 0] >= len(lstFilesDCM)] = len(lstFilesDCM) - 1
+        #lower_cone[:, 0][lower_cone[:, 0] >= len(lstFilesDCM)] = len(lstFilesDCM) - 1
+        center_cone = center_cone[center_cone[:, -1] > 0]
+        center_cone = center_cone[center_cone[:, -1] < len(lstFilesDCM)]
+        upper_cone = upper_cone[upper_cone[:, -1] > 0]
+        upper_cone = upper_cone[upper_cone[:, -1] < len(lstFilesDCM)]
+        lower_cone = lower_cone[lower_cone[:, -1] > 0]
+        lower_cone = lower_cone[lower_cone[:, -1] < len(lstFilesDCM)]
         volume[center_cone[:, 2].astype(int), center_cone[:, 0].astype(int), center_cone[:, 1].astype(
             int)] = 6000
         volume[upper_cone[:, 2].astype(int), upper_cone[:, 0].astype(int), upper_cone[:, 1].astype(
@@ -455,7 +461,6 @@ class cone:
                 pixcoorArray[:, k, j] = np.round(np.matmul(self.invAffinMatrix, coorArray[:, k, j]))
         '''
         return pixcoorArray
-
 
 class BodyMask:
     def __init__(self, slice):
@@ -640,7 +645,7 @@ def ap_drr2(ArrayDicomMu, Angle):
 '''
 
 
-def data_to_dict(drr_vol, kVp, data_dict):
+def data_to_dict(drr_vol, ctcutdata, kVp, data_dict):
     """
             Based on DICOM SOP Instance UID.
             Saving running time we save each DRR calculation at different kVp in JSON files.
@@ -650,13 +655,13 @@ def data_to_dict(drr_vol, kVp, data_dict):
     :param data_dict: dictionary that will populate all the information
     :return:
     """
-    if keys_exists(data_dict, str(RefDsFirst.SOPInstanceUID)): # if SOP Instance UID allready proccessed and at requested kVp data was'nt calculated insert that new kVp calculated data to dict ans json
-        data_dict[str(RefDsFirst.SOPInstanceUID)][str(kVp)] = {'DRR': drr_vol}
+    if keys_exists(data_dict, str(RefDsFirst.SeriesInstanceUID)): # if SOP Instance UID allready proccessed and at requested kVp data was'nt calculated insert that new kVp calculated data to dict ans json
+        data_dict[str(RefDsFirst.SeriesInstanceUID)][str(kVp)] = {'DRR': drr_vol}
     else:
-        data_dict[str(RefDsFirst.SOPInstanceUID)] = {}
-        data_dict[str(RefDsFirst.SOPInstanceUID)][str(kVp)] = {'DRR': drr_vol}
-        data_dict[str(RefDsFirst.SOPInstanceUID)]['HU'] = {'HounsfieldUnit': ArrayDicomHu}
-    with open('%s.json' % RefDsFirst.SOPInstanceUID, 'w') as f:
+        data_dict[str(RefDsFirst.SeriesInstanceUID)] = {}
+        data_dict[str(RefDsFirst.SeriesInstanceUID)][str(kVp)] = {'DRR': drr_vol}
+        data_dict[str(RefDsFirst.SeriesInstanceUID)]['HU'] = {'HounsfieldUnit': ctcutdata}
+    with open('%s.json' % RefDsFirst.SeriesInstanceUID, 'w') as f:
         f.write(json.dumps(data_dict, default=convert))
 
 
@@ -770,22 +775,25 @@ def get_data(kVp):
     :param kVp: kVp for calculation
     :return: volume after DRR calculation
     """
-    with open('%s.json' % RefDsFirst.SOPInstanceUID) as file:
+    with open('%s.json' % RefDsFirst.SeriesInstanceUID) as file:
         data = file.read()
         data_dict = json.loads(data, object_hook=deconvert)
         b = time.time()
-        if keys_exists(data_dict, str(RefDsFirst.SOPInstanceUID), str(kVp)):
-            APData = data_dict[str(RefDsFirst.SOPInstanceUID)][str(kVp)]['DRR']
-            HUdata = data_dict[str(RefDsFirst.SOPInstanceUID)]['HU']['HounsfieldUnit']
+        if keys_exists(data_dict, str(RefDsFirst.SeriesInstanceUID), str(kVp)):
+            APData = data_dict[str(RefDsFirst.SeriesInstanceUID)][str(kVp)]['DRR']
+            HUdata = data_dict[str(RefDsFirst.SeriesInstanceUID)]['HU']['HounsfieldUnit']
             v = time.time()
             print('Simulation Run time is', v - b)
             return APData, HUdata
         else:
-            APData = cal_data(kVp, data_dict)
-            return APData
+            print('Data for the requested settings is not available, calculation need to take place. '
+                  'Please wait until calculation is done. Do not quit Simulation before calculation complete ')
+            HUdata = data_dict[str(RefDsFirst.SeriesInstanceUID)]['HU']['HounsfieldUnit']
+            APData = cal_data(HUdata, kVp, data_dict)
+            return APData, HUdata
 
 
-def cal_data(kVp, data_dict):
+def cal_data(dataarray, kVp , data_dict):
     """
                 Accept kVp for calculation.
                 Calculate voxel linear attenuation coefficient using linear interpolation
@@ -797,7 +805,7 @@ def cal_data(kVp, data_dict):
     # Load dimensions based on the number of rows, columns, and slices (along the Z axis)
 
     HUtoMUkVp = linear_attenuation_coefficient_calculation(kVp)
-    ArrayDicomMu = np.interp(ArrayDicomHu, HUtoMUkVp[:, 1],
+    ArrayDicomMu = np.interp(dataarray, HUtoMUkVp[:, 1],
                              HUtoMUkVp[:, 0])  # Array based on Linear attenuation coefficient
     air_att_coeff = HUtoMUkVp[0, 0]
     o = time.time()
@@ -805,7 +813,7 @@ def cal_data(kVp, data_dict):
     v = time.time()
     print('Calculation Time is', v - o)
     print('DRR calculation Run time is', v - b)
-    data_to_dict(APDRR, kVp, data_dict)
+    data_to_dict(APDRR, dataarray, kVp, data_dict)
     return APDRR
 
 
@@ -830,15 +838,15 @@ def ct_data_analysis(FilePath):
     RefDsFirst = dcm.read_file(lstFilesDCM[0])
 
     Angle = range(-30, 30)
-    kVp = 60
-    if os.path.isfile('/Users/nivravhon/PycharmProjects/pythoProject/%s.json' % RefDsFirst.SOPInstanceUID):
-        AP, ArrayDicomHu = get_data(kVp)
-        return AP, ArrayDicomHu
+    kVp = 50
+    if os.path.isfile('/Users/nivravhon/PycharmProjects/pythoProject/%s.json' % RefDsFirst.SeriesInstanceUID):
+        AP, ArrayDicomHuCut = get_data(kVp)
+        return AP, ArrayDicomHuCut
     else:
         PatientPosition = RefDsFirst.PatientPosition
         ConstPixelDims = (len(lstFilesDCM), int(RefDsFirst.Rows), int(RefDsFirst.Columns))
         ArrayDicom = np.zeros(ConstPixelDims, dtype=RefDsFirst.pixel_array.dtype)
-        ArrayDicomHu = np.zeros(ConstPixelDims, dtype=RefDsFirst.pixel_array.dtype)
+        #ArrayDicomHu = np.zeros(ConstPixelDims, dtype=RefDsFirst.pixel_array.dtype)
         for filenameDCM in lstFilesDCM:
             # read the file
             ds = dcm.read_file(filenameDCM)
@@ -862,12 +870,12 @@ def ct_data_analysis(FilePath):
         ArrayDicomHu = np.add(np.multiply(ArrayDicomRot, int(RefDsFirst.RescaleSlope)),
                               int(RefDsFirst.RescaleIntercept))  # Array based on hounsfield Unit
         ArrayDicomHu[ArrayDicomHu <= -1000] = -1000
-        ArrayDicomHu = find_high_Patient_volume_slice(ArrayDicomHu)
+        ArrayDicomHuCut = find_high_Patient_volume_slice_cut_volume_accordingly(ArrayDicomHu)
         data_dict = {}
-        AP = cal_data(kVp, data_dict)
-        return AP, ArrayDicomHu
+        AP = cal_data(ArrayDicomHuCut, kVp, data_dict)
+        return AP, ArrayDicomHuCut
 
-def find_high_Patient_volume_slice(vol):
+def find_high_Patient_volume_slice_cut_volume_accordingly(vol):
     s = time.time()
     slice_vol = []
     for i in range(0, np.shape(vol)[0]-1):
