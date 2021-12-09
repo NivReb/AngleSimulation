@@ -234,7 +234,7 @@ def cone(p0, p1, R0, R1):
     cone_d = time.time()
     print('cone corr place cal time: %s' % (cone_e-cone_s))
     print('cone corr to voxal', cone_d-cone_e)
-    return pixcoorArray
+    return pixcoorArray, coorArray
 
 
 def voxal_ray_distance(ArrayShape, angle, RefDs):
@@ -356,8 +356,8 @@ rotslice = ndimage.rotate(ArrayDicomHu[clickedsliceind, :, :], float(anglewillcl
 index_new_vol_clicked_slice = int((2*R+10)/2)
 rowpixelspacing = RefDsFirst.PixelSpacing[0]
 #refrence points for cone calculation
-coneimagebase_b, coneimagebase_c = ref_point_for_cone_rotation(ArrayDicomHu[clickedsliceind, :, :], clickpointcolumn, clickedsliceind, skintolowertarget, skintotargetcenter, skintouppertarget, distfromskin, AffinMatrix,rowpixelspacing)
-conerotimagebase_b, conerotimagebase_c  = ref_point_for_cone_rotation(rotslice, clickpointcolumn, clickedsliceind, skintolowertarget, skintotargetcenter, skintouppertarget, distfromskin, AffinMatrix,rowpixelspacing)
+coneimagebase_b, coneimagebase_c = ref_point_for_cone_rotation(ArrayDicomHu[clickedsliceind, :, :], clickpointcolumn, clickedsliceind, skintolowertarget, skintotargetcenter, skintouppertarget, distfromskin, AffinMatrix, rowpixelspacing)
+conerotimagebase_b, conerotimagebase_c = ref_point_for_cone_rotation(rotslice, clickpointcolumn, clickedsliceind, skintolowertarget, skintotargetcenter, skintouppertarget, distfromskin, AffinMatrix, rowpixelspacing)
 
 
 #calculate points for cone position after rotation
@@ -369,13 +369,17 @@ conerotimagebase_b, conerotimagebase_c  = ref_point_for_cone_rotation(rotslice, 
 #lowercne = cone(lowerapexpoint, centerbasepoint, 0, R, 'green')
 
 #cone coordinates
-centercone = cone(coneimagebase_c, coneimagebase_b, 0, R)
+centercone, conecoordinates = cone(coneimagebase_c, coneimagebase_b, 0, R)
+centerrotcone, rotconecoordinates = cone(conerotimagebase_c, conerotimagebase_b, 0, R)
 #uppercone = cone(upperapexpoint, centerbasepoint, 0, R)
 #lowercone = cone(lowerapexpoint,centerbasepoint, 0, R)
 
 conevol = np.full((ArrayDicomHu.shape), 0)
 cone_imp_s = time.time()
 ArrayDicomHu[centercone[:, 2].astype(int), centercone[:, 0].astype(int), centercone[:, 1].astype(int)] = 6000
+conevol[centerrotcone[:, 2].astype(int), centerrotcone[:, 0].astype(int), centerrotcone[:, 1].astype(int)] = 6000
+rotcone = ndimage.rotate(conevol[clickedsliceind, :, :], float(anglewillclick), reshape=False, mode='constant', cval=0)
+ArrayDicomHu[clickedsliceind, :, :] = ArrayDicomHu[clickedsliceind, :, :] + rotcone
 #conevol[uppercone[:, 2].astype(int), uppercone[:, 0].astype(int), uppercone[:, 1].astype(int)] = 6000
 #conevol[lowercone[:, 2].astype(int), lowercone[:, 0].astype(int), lowercone[:, 1].astype(int)] = 6000
 
@@ -406,7 +410,7 @@ bodycontour = find_body(edges)
 body = create_mask_from_polygon(ArrayDicomHu[145, :, :], bodycontour)
 rowind = np.argwhere(body[:, columnind]==1)[0]
 plt.imshow(body)
-'''
+
 #find affine transform matrix
 # input data
 ins = [[1, 1], [2, 3], [3, 2]]  # <- points
@@ -428,7 +432,7 @@ for p, P in zip(np.array(ins), np.array(out)):
   image_p = np.dot(A, p) + t
   result = "[OK]" if np.allclose(image_p, P) else "[ERROR]"
   print(p, " mapped to: ", image_p, " ; expected: ", P, result)
-  
+'''
 
 
 
