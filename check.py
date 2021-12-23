@@ -234,7 +234,7 @@ def cone(p0, p1, R0, R1):
     cone_d = time.time()
     print('cone corr place cal time: %s' % (cone_e-cone_s))
     print('cone corr to voxal', cone_d-cone_e)
-    return pixcoorArray, coorArray
+    return pixcoorArray#, coorArray
 
 
 def voxal_ray_distance(ArrayShape, angle, RefDs):
@@ -276,15 +276,13 @@ def ref_point_for_cone_rotation(slice, columnind, sliceind, distolow, distocente
     return centerbasepoint, centeralapexpoint
 
 
-def cone_transformation_matrix(basepoints, rotatepoints):
-    l = len(basepoints)
-    B = np.vstack([np.transpose(ins), np.ones(l)])
-    D = 1.0 / np.linalg.det(B)
-    entry = lambda r, d: np.linalg.det(np.delete(np.vstack([r, B]), (d + 1), axis=0))
-    M = [[(-1) ** i * D * entry(R, i) for i in range(l)] for R in np.transpose(rotatepoints)]
-    A, t = np.hsplit(np.array(M), [l - 1])
-    t = np.transpose(t)[0]
-
+def volume_for_cone(vol, sliceind, R, angle):
+    if sliceind + R > len(lstFilesDCM):
+        return volume_rotation(vol[sliceind - R : len(lstFilesDCM), :, :], angle), sliceind-R
+    elif sliceind - R < 0:
+        return volume_rotation(vol[0:sliceind+R, :, :], angle), 0
+    else:
+        return volume_rotation(vol[sliceind-R:sliceind+R, :, :], angle), sliceind-R
 '''
 # find the skin
 def find_high_Patient_volume_slice(vol):
@@ -348,17 +346,54 @@ skintotargetcenter = 70.5 #mm
 skintolowertarget = 94 #mm
 clickedsliceind = 114
 clickpointcolumn = 239
-anglewillclick = -10
+anglewillclick = 10
 
 AffinMatrix = a_multi_matrix()
 
+conevol, slicecorrectionfactor = volume_for_cone(ArrayDicomHu, clickedsliceind, R, anglewillclick)
+edges = measure.find_contours(conevol[clickedsliceind-slicecorrectionfactor, :, :], level=-250, fully_connected='low', positive_orientation='high')
+bodycontour = find_body(edges)
+body = create_mask_from_polygon(conevol[clickedsliceind-slicecorrectionfactor, :, :], bodycontour)
+rowind = np.argwhere(body[:, clickpointcolumn] == 1)[0]
+
+
+# pixal world to patient coordinate system
+centerbasepoint = voxal_to_patient(AffinMatrix, np.array(
+    (int(np.round(rowind - distfromskin / RefDsFirst.PixelSpacing[0])), clickpointcolumn, clickedsliceind, 1)))[0:3]
+upperapexpoint = voxal_to_patient(AffinMatrix, np.array(
+    (int(np.round(rowind + skintouppertarget / RefDsFirst.PixelSpacing[0])), clickpointcolumn, clickedsliceind, 1)))[0:3]
+centeralapexpoint = voxal_to_patient(AffinMatrix, np.array(
+    (int(np.round(rowind + skintotargetcenter / RefDsFirst.PixelSpacing[0])), clickpointcolumn, clickedsliceind, 1)))[0:3]
+lowerapexpoint = voxal_to_patient(AffinMatrix, np.array(
+    (int(np.round(rowind + skintolowertarget / RefDsFirst.PixelSpacing[0])), clickpointcolumn, clickedsliceind, 1)))[0:3]
+
+uppercone = cone(upperapexpoint, centerbasepoint, 0, R)
+centercone = cone(centeralapexpoint, centerbasepoint, 0, R)
+lowercone = cone(lowerapexpoint, centerbasepoint, 0, R)
+uppercone[:, 2] = uppercone[:, 2] - slicecorrectionfactor
+centercone[:, 2] = centercone[:, 2] - slicecorrectionfactor
+lowercone[:, 2] = lowercone[:, 2] - slicecorrectionfactor
+
+#conevol[uppercone[:, 2].astype(int), uppercone[:, 0].astype(int), uppercone[:, 1].astype(int)] = 6000
+#conevol[centercone[:, 2].astype(int), centercone[:, 0].astype(int), centercone[:, 1].astype(int)] = 6000
+#conevol[lowercone[:, 2].astype(int), lowercone[:, 0].astype(int), lowercone[:, 1].astype(int)] = 6000
+'''
 rotslice = ndimage.rotate(ArrayDicomHu[clickedsliceind, :, :], float(anglewillclick), reshape=False, mode='constant', cval=-1000) #rotate volume to the angle user chose
 index_new_vol_clicked_slice = int((2*R+10)/2)
 rowpixelspacing = RefDsFirst.PixelSpacing[0]
 #refrence points for cone calculation
-coneimagebase_b, coneimagebase_c = ref_point_for_cone_rotation(ArrayDicomHu[clickedsliceind, :, :], clickpointcolumn, clickedsliceind, skintolowertarget, skintotargetcenter, skintouppertarget, distfromskin, AffinMatrix, rowpixelspacing)
+#coneimagebase_b, coneimagebase_c = ref_point_for_cone_rotation(ArrayDicomHu[clickedsliceind, :, :], clickpointcolumn, clickedsliceind, skintolowertarget, skintotargetcenter, skintouppertarget, distfromskin, AffinMatrix, rowpixelspacing)
 conerotimagebase_b, conerotimagebase_c = ref_point_for_cone_rotation(rotslice, clickpointcolumn, clickedsliceind, skintolowertarget, skintotargetcenter, skintouppertarget, distfromskin, AffinMatrix, rowpixelspacing)
+rotslice[conerotimagebase_b, clickpointcolumn] = 6000
+rotslice[conerotimagebase_c, clickpointcolumn] = 6000
+rotslicenorm = ndimage.rotate(rotslice, float(-anglewillclick), reshape=False, mode='constant', cval=-1000)
+conecoorunrotimage = np.where(rotslicenorm > 3000)
+conecoor[:,0] = conecoorunrotimage[0]
+baserow = min(conecoorunrotimage[0])
+centapex = max(conecoorunrotimage[0])
 
+#[row, column, slice, 1]
+voxal_to_patient(AffinMatrix, )
 
 #calculate points for cone position after rotation
 #centerbasepoint[1], centerbasepoint[0] = rot(centerbasepoint[1], centerbasepoint[0], angle=-10)
@@ -380,64 +415,30 @@ ArrayDicomHu[centercone[:, 2].astype(int), centercone[:, 0].astype(int), centerc
 conevol[centerrotcone[:, 2].astype(int), centerrotcone[:, 0].astype(int), centerrotcone[:, 1].astype(int)] = 6000
 rotcone = ndimage.rotate(conevol[clickedsliceind, :, :], float(anglewillclick), reshape=False, mode='constant', cval=0)
 ArrayDicomHu[clickedsliceind, :, :] = ArrayDicomHu[clickedsliceind, :, :] + rotcone
-#conevol[uppercone[:, 2].astype(int), uppercone[:, 0].astype(int), uppercone[:, 1].astype(int)] = 6000
-#conevol[lowercone[:, 2].astype(int), lowercone[:, 0].astype(int), lowercone[:, 1].astype(int)] = 6000
+
 
 #rotcone = volume_rotation(conevol, -anglewillclick)
 #CTwithcone = ArrayDicomHu + rotcone
 '''
-wedge1 = Wedge((239, 239), 1, 0, 360, width=0.01)
-wedge2 = Wedge((239, 239), 2, 0, 360, width=0.01)
 
-cone_imp_e = time.time()
-print('cone impementation time: %s' % (cone_imp_e-cone_imp_s))
-fig = plt.figure()
-fig.patch.set_facecolor('black')
-gs = GridSpec(1, 3, figure=fig)
-ax1 = fig.add_subplot(gs[0, 0])
-ax2 = fig.add_subplot(gs[0, 1])
-ax3 = fig.add_subplot(gs[0, 2])
-ax1.add_wedge(wedge1)
-ax1.add_wedge(wedge2)
-ax1.imshow(rotvol[index_new_vol_clicked_slice, :, :].squeeze(), cmap='gray')
-ax2.imshow(np.rot90(rotvol[:, :, index_new_vol_clicked_slice].squeeze(), k=3), cmap='gray') # 150,512
-ax3.imshow(rotvol[:, int(np.round(rowind+skintotargetcenter/rowpixelspacing)), :].squeeze(), cmap='gray') #150,512
+
+#cone_imp_e = time.time()
+#print('cone impementation time: %s' % (cone_imp_e-cone_imp_s))
+#fig = plt.figure()
+#fig.patch.set_facecolor('black')
+#gs = GridSpec(1, 3, figure=fig)
+#ax1 = fig.add_subplot(gs[0, 0])
+#ax2 = fig.add_subplot(gs[0, 1])
+#ax3 = fig.add_subplot(gs[0, 2])
+#ax1.add_wedge(wedge1)
+#ax1.add_wedge(wedge2)
+#ax1.imshow(rotvol[index_new_vol_clicked_slice, :, :].squeeze(), cmap='gray')
+#ax2.imshow(np.rot90(rotvol[:, :, index_new_vol_clicked_slice].squeeze(), k=3), cmap='gray') # 150,512
+#ax3.imshow(rotvol[:, int(np.round(rowind+skintotargetcenter/rowpixelspacing)), :].squeeze(), cmap='gray') #150,512
+plt.imshow(conevol[clickedsliceind-slicecorrectionfactor, :, :], cmap='gray')
 plt.show()
 
 
-edges = measure.find_contours(ArrayDicomHu[145, :, :], level=-250, fully_connected='low', positive_orientation='high')
-bodycontour = find_body(edges)
-body = create_mask_from_polygon(ArrayDicomHu[145, :, :], bodycontour)
-rowind = np.argwhere(body[:, columnind]==1)[0]
-plt.imshow(body)
-
-#find affine transform matrix
-# input data
-ins = [[1, 1], [2, 3], [3, 2]]  # <- points
-out = [[0, 2], [1, 2], [-2, -1]] # <- mapped to
-# calculations
-l = len(ins)
-B = np.vstack([np.transpose(ins), np.ones(l)])
-D = 1.0 / np.linalg.det(B)
-entry = lambda r,d: np.linalg.det(np.delete(np.vstack([r, B]), (d+1), axis=0))
-M = [[(-1)**i * D * entry(R, i) for i in range(l)] for R in np.transpose(out)]
-A, t = np.hsplit(np.array(M), [l-1])
-t = np.transpose(t)[0]
-# output
-print("Affine transformation matrix:\n", A)
-print("Affine transformation translation vector:\n", t)
-# unittests
-print("TESTING:")
-for p, P in zip(np.array(ins), np.array(out)):
-  image_p = np.dot(A, p) + t
-  result = "[OK]" if np.allclose(image_p, P) else "[ERROR]"
-  print(p, " mapped to: ", image_p, " ; expected: ", P, result)
-'''
 
 
 
-#slice = ArrayDicomHu[145, :, :]
-#slice [slice < -60] = -60
-#plt.imshow(edged)
-plt.imshow(ArrayDicomHu[clickedsliceind, :, :], cmap='gray')
-plt.show()

@@ -12,6 +12,7 @@ from natsort import natsorted
 from scipy import ndimage, interpolate
 from matplotlib.backend_bases import MouseButton
 from matplotlib.widgets import RangeSlider, Button, RadioButtons, Slider
+import matplotlib.lines as lines
 import time
 import json
 from tkinter import *
@@ -29,6 +30,10 @@ startIn = time.time()
 
 
 class IndexTracker:
+
+    upperringradius = 30.5 / 2  # in units mm
+    lowerringradius = 25.5 / 2  # in units mm
+
     def __init__(self, ax, drr_volume, title):
         self.ax = ax # axes for ploting
         self.volume = drr_volume # 3D numpy array contains 2D processed images after generating DRR in specified angles.
@@ -38,7 +43,10 @@ class IndexTracker:
         self.im = ax.imshow(self.volume[self.ind, :, :], cmap='gray')# , extent=[0, RefDsFirst.Columns * RefDsFirst.PixelSpacing[1], 0, rows * RefDsFirst.PixelSpacing[0]])
         self.title = title
         self.targetarray = np.zeros(np.shape(self.volume[self.ind, :, :]))
-        self.imageindexkeeper = self.ind # saves image index after click on target
+        self.imageindexkeeper = 0 # saves image index after click on target
+        self.counter = 0
+        self.clickedrow = 0
+        self.clickedcolumn = 0
         #self.imagetargetarray = drr_volume #volume to add target markers.
         ax.set_title(self.title + '' + 'Angle %s [Degrees]' % Angle[self.ind])
         ax.title.set_color('white')
@@ -74,6 +82,21 @@ class IndexTracker:
             self.ind = (self.ind + 1) % self.slices
         else:
             self.ind = (self.ind - 1) % self.slices
+
+        # Remove rings if Angle was changed & draw the ring back when user toggle to the angle he had clicked on before
+        if self.counter > 0 and self.ax.patches:
+            self.ax.patches[0].remove()
+            self.ax.patches[0].remove()
+            self.ax.patches[0].remove()
+
+        if self.imageindexkeeper == self.ind:
+            cirup = plt.Circle((self.clickedcolumn, self.clickedrow), IndexTracker.upperringradius, color='w', fill=False)
+            cirlow = plt.Circle((self.clickedcolumn, self.clickedrow), IndexTracker.lowerringradius, color='w', fill=False)
+            targetline = plt.Rectangle((self.clickedcolumn-0.5, self.clickedrow - IndexTracker.lowerringradius), 1,
+                                       IndexTracker.lowerringradius-1, color='w')
+            self.ax.add_patch(cirup)
+            self.ax.add_patch(cirlow)
+            self.ax.add_patch(targetline)
         self.update()
 
     def update(self):
@@ -84,7 +107,7 @@ class IndexTracker:
 
         self.im.set_data(self.volume[self.ind, :, :])
         self.ax.set_title(self.title + ' ' + 'Angle %s [degrees]' % Angle[self.ind])
-        self.im.axes.figure.canvas.draw()
+        self.im.axes.figure.canvas.draw_idle()
 
     def update_slider(self, val):
         """
@@ -110,27 +133,31 @@ class IndexTracker:
                     white cross at click coordinates
                     and update image.
         """
-        if np.any(self.targetarray):
-            self.volume[self.imageindexkeeper, :, :] = self.volume[self.imageindexkeeper, :, :] - self.targetarray
-        else:
-            pass
-        self.targetarray = np.zeros(np.shape(self.volume[self.ind, :, :]))
-        self.imageindexkeeper = self.ind
-        upperringradius = (30.5/2) # in units mm
-        lowerringradius = 25.5/2 # in units mm
-        rowlowerring, columnlowerring = skimage.draw.circle_perimeter(row, column, int(lowerringradius/RefDsFirst.PixelSpacing[0]))
-        rowupperring, columnupperring = skimage.draw.circle_perimeter(row, column, int(upperringradius/RefDsFirst.PixelSpacing[0]))
-        rowlinetotarget, columnlinetotarget = skimage.draw.line(rowlowerring[0], columnlowerring[0], row, column)
-        self.targetarray[rowlowerring, columnlowerring] = 6000
-        self.targetarray[rowupperring, columnupperring] = 6000
-        self.targetarray[rowlinetotarget, columnlinetotarget] = 6000
-        self.volume[self.imageindexkeeper, :, :] = self.volume[self.imageindexkeeper, :, :] + self.targetarray
-        self.im.set_data(self.volume[self.imageindexkeeper, :, :])
-        self.im.axes.figure.canvas.draw()
+        cirup = plt.Circle((column, row), IndexTracker.upperringradius, color='w', fill=False)
+        cirlow = plt.Circle((column, row), IndexTracker.lowerringradius, color='w', fill=False)
+        targetline = plt.Rectangle((column-0.5, row-IndexTracker.lowerringradius), 1, IndexTracker.lowerringradius-1, color='w', fill=True)
+
+        self.clickedcolumn = column
+        self.clickedrow = row
+
+        if self.counter == 0:
+            self.counter = self.counter + 1
+            self.imageindexkeeper = self.ind
+        elif self.counter > 0 and self.ax.patches:
+            self.ax.patches[0].remove()
+            self.ax.patches[0].remove()
+            self.ax.patches[0].remove()
+            self.imageindexkeeper = self.ind
+        elif self.counter > 0:
+            self.imageindexkeeper = self.ind
+
+        self.ax.add_patch(cirup)
+        self.ax.add_patch(cirlow)
+        self.ax.add_patch(targetline)
+        print(self.ax.patches)
 
 
-
-class cone:
+class Cone:
     """
                 Generating acoustic beam based on user click at DRR image.
     """
@@ -147,11 +174,11 @@ class cone:
         self.indexTracker = indTracker
         # expanding volume for cone accommodation
         s, c, r = ct_volume.shape
-        self.data_vol = np.full((s,c+cone.gelpadThick,r+20), -1000)
+        self.data_vol = np.full((s, c+Cone.gelpadThick, r+20), -1000)
         self.data_vol[:, 44:44+c, 9:9+r] = ct_volume
-
         self.conevol = np.zeros(self.data_vol.shape) #volum in the size of expanded vol that will accomodate cone.
-        self.rotvol = ct_volume
+        self.basevol = ct_volume
+        self.correctionfactor = 0
         self.sliceind = self.data_vol.shape[0]//2
         self.columnind = self.data_vol.shape[2]//2
         self.rowind = self.data_vol.shape[1]//2
@@ -192,7 +219,7 @@ class cone:
         #Axial Slider
         self.posAxial = axAxial.get_position()
         self.axAxial_slide = plt.axes([self.posAxial.x0, self.posAxial.y0-0.1, 0.2, 0.01])  # Slider position
-        self.AxialSlider = Slider(self.axAxial_slide, '', valmin=0, valmax=self.data_vol.shape[0]-1, valinit=self.sliceind, valstep=1,
+        self.AxialSlider = Slider(self.axAxial_slide, '', valmin=0, valmax=self.data_vol.shape[0]-1, valstep=1, valinit=self.data_vol.shape[0]/2,
                                     orientation='horizontal')  # slider range
         #ax_slide.set_xticks(np.arange(self.sliceind))
         self.AxialSlider.valtext.set_visible(True)
@@ -202,7 +229,7 @@ class cone:
         #Sagittal Slider
         self.posSagittal = axSagittal.get_position()
         self.axSagittal_slide = plt.axes([self.posSagittal.x0, self.posAxial.y0 - 0.1, 0.2, 0.01])  # Slider position
-        self.SagittalSlider = Slider(self.axSagittal_slide, '', valmin=0, valmax=self.data_vol.shape[2] - 1, valinit=self.columnind,
+        self.SagittalSlider = Slider(self.axSagittal_slide, '', valmin=0, valmax=self.data_vol.shape[2] - 1, valinit=self.data_vol.shape[2]/2,
                                valstep=1,
                                orientation='horizontal')  # slider range
         # ax_slide.set_xticks(np.arange(self.sliceind))
@@ -214,8 +241,7 @@ class cone:
         self.posCoronal = axCoronal.get_position()
         self.axCoronal_slide = plt.axes(
             [self.posCoronal.x0, self.posCoronal.y0 - 0.1, 0.2, 0.01])  # Slider position
-        self.CoronalSlider = Slider(self.axCoronal_slide, '', valmin=0, valmax=self.data_vol.shape[1] - 1,
-                                     valinit=self.rowind,
+        self.CoronalSlider = Slider(self.axCoronal_slide, '', valmin=0, valmax=self.data_vol.shape[1] - 1, valinit=self.data_vol.shape[1]/2,
                                      valstep=1,
                                      orientation='horizontal')  # slider range
         # ax_slide.set_xticks(np.arange(self.sliceind))
@@ -261,9 +287,9 @@ class cone:
         # get the x and y pixel coords
 
         if event.button is MouseButton.LEFT and event.inaxes == self.indexTracker.ax:
-            s = time.time()
-            self.angle = Angle[self.indexTracker.ind]
+            t = time.time()
 
+            self.angle = Angle[self.indexTracker.ind]
             x, y = event.x, event.y
             #ax2 = event.inaxes  # the axes instance
             print('data coords %f %f' % (np.round(event.xdata), np.round(event.ydata)))
@@ -271,42 +297,52 @@ class cone:
             self.columnind = np.round(event.xdata)
             self.indexTracker.click_target_marking(self.sliceind.astype(int), self.columnind.astype(int))
             # remove old cone after new click
-            if np.any(self.conevol):
-                self.data_vol = self.data_vol - self.conevol
-                self.conevol = np.zeros(self.data_vol.shape)
-            else:
-                pass
-
-            self.data_vol = self.volume_rotation(self.data_vol, self.angle)
+            s, c, r = self.basevol.shape
+            self.data_vol = np.full((s, c + Cone.gelpadThick, r + 20), -1000)
+            self.data_vol[:, 44:44 + c, 9:9 + r] = self.basevol
+            simulationR = 19
+            o = time.time()
+            self.data_vol, self.correctionfactor = self.volume_for_cone(self.data_vol, self.sliceind.astype(int), int(Cone.R-simulationR), self.angle)# correction factor = factor to change sliceind to new place.
+            l = time.time()
+            self.conevol = np.zeros(self.data_vol.shape) #set volume dimensions for cone.
             #find skin row index after rotation with cutted volume
-            self.sliceforcontour = self.data_vol[self.sliceind.astype(int), :, :]
-            bodymaskclass = BodyMask(self.sliceforcontour)
-            bodymask = bodymaskclass.mask_body()
-            self.rowind = np.argwhere(bodymask[:, self.columnind.astype(int)] == 1)[0]
-            base, up, center, low = self.cone_coordinates(self.rowind, self.columnind, self.sliceind) # cone points coordinates in patient coordinate system
-            centercone = self.cone(center, base, 0, cone.R) # center cone indexes
-            uppercone = self.cone(up, base, 0, cone.R)# upper cone indexes
-            lowercone = self.cone(low, base, 0, cone.R)# lower cone indexes
+            self.clickedslice = self.data_vol[self.sliceind.astype(int) - self.correctionfactor, :, :]
+            clickedcolumn = self.clickedslice[:, self.columnind.astype(int)]
+            if any(x in clickedcolumn for x in range(-250, 0)):
+                self.rowind = np.where(clickedcolumn > -250)[0][0]
+            else:
+                print('Selected Target is out of the Allowed Therapeutic Area, please select target within Therapeutic Area')
 
-            self.conevol = self.cone_volume_integrate(self.conevol, centercone, uppercone, lowercone)
+            g = time.time()
+            base, up, center, low = self.cone_coordinates(self.rowind, self.columnind, self.sliceind) # cone points coordinates in patient coordinate system
+            centercone = self.cone(center, base, 0, Cone.R) # center cone indexes
+            uppercone = self.cone(up, base, 0, Cone.R)# upper cone indexes
+            lowercone = self.cone(low, base, 0, Cone.R)# lower cone indexes
+
+            d = time.time()
+            self.conevol = self.cone_volume_integrate(self.conevol, centercone, uppercone, lowercone, Cone.R-simulationR)
             self.data_vol = self.data_vol + self.conevol
             f = time.time()
-            print('click target cal time', f-s)
-            self.update()
+            print('vol rotation time is', l-o)
+            print('Finding row skin index time is', g-l)
+            print('Cone calculation time is', d-g)
+            print('Cone integration in vol time is', f-d)
+            print('click target cal time', f-t)
+            self.update_CT()
 
-    def update(self):
+    def update_CT(self):
         """
                     With each user click update CT images with cone at clicked place.
         :return:
         """
-        self.imAxial.set_data(self.data_vol[self.sliceind.astype(int), :, :].squeeze())
+        self.imAxial.set_data(self.data_vol[self.sliceind.astype(int)-self.correctionfactor, :, :].squeeze())
         self.imSagittal.set_data(np.rot90(self.data_vol[:, :, self.columnind.astype(int)].squeeze(), k=3))
-        self.imCoronal.set_data(self.data_vol[:, int(np.round(self.rowind + cone.skintotargetcenter / self.rowpixelspacing)), :].squeeze())
-        self.imAxial.axes.figure.canvas.draw()
-        self.imSagittal.axes.figure.canvas.draw()
-        self.imCoronal.axes.figure.canvas.draw()
+        self.imCoronal.set_data(self.data_vol[:, int(np.round(self.rowind + Cone.skintotargetcenter / self.rowpixelspacing)), :].squeeze())
+        self.imAxial.axes.figure.canvas.draw_idle()
+        self.imSagittal.axes.figure.canvas.draw_idle()
+        self.imCoronal.axes.figure.canvas.draw_idle()
 
-    def cone_volume_integrate(self, volume, center_cone, upper_cone, lower_cone):
+    def cone_volume_integrate(self, volume, center_cone, upper_cone, lower_cone, effectiveR):
         """
 
         :param lower_cone: indices for the lower cone
@@ -315,14 +351,26 @@ class cone:
         :param volume: CT volume after rotation in the angle user chose
         :return: CT volume after cones implementation
         """
-        #center_cone[:, 0][center_cone[:, 0] >= len(lstFilesDCM)] = len(lstFilesDCM) - 1
-        #upper_cone[:, 0][upper_cone[:, 0] >= len(lstFilesDCM)] = len(lstFilesDCM) - 1
-        #lower_cone[:, 0][lower_cone[:, 0] >= len(lstFilesDCM)] = len(lstFilesDCM) - 1
-        center_cone = center_cone[center_cone[:, -1] > 0]
+        # Removes indices that are out of volume because of volume size reduction
+        center_cone = center_cone[center_cone[:, -1] > self.sliceind.astype(int) - effectiveR]
+        center_cone = center_cone[center_cone[:, -1] < self.sliceind.astype(int) + effectiveR]
+        upper_cone = upper_cone[upper_cone[:, -1] > self.sliceind.astype(int) - effectiveR]
+        upper_cone = upper_cone[upper_cone[:, -1] < self.sliceind.astype(int) + effectiveR]
+        lower_cone = lower_cone[lower_cone[:, -1] > self.sliceind.astype(int) - effectiveR]
+        lower_cone = lower_cone[lower_cone[:, -1] < self.sliceind.astype(int) + effectiveR]
+        # slice index correction after volume size reduction
+        if self.sliceind - effectiveR < 0:
+            pass
+        else:
+            upper_cone[:, 2] = upper_cone[:, 2] - min(upper_cone[:, 2])
+            center_cone[:, 2] = center_cone[:, 2] - min(center_cone[:, 2])
+            lower_cone[:, 2] = lower_cone[:, 2] - min(lower_cone[:, 2])
+        # slice index correction after volume size reduction
+        center_cone = center_cone[center_cone[:, -1] >= 0]
         center_cone = center_cone[center_cone[:, -1] < len(lstFilesDCM)]
-        upper_cone = upper_cone[upper_cone[:, -1] > 0]
+        upper_cone = upper_cone[upper_cone[:, -1] >= 0]
         upper_cone = upper_cone[upper_cone[:, -1] < len(lstFilesDCM)]
-        lower_cone = lower_cone[lower_cone[:, -1] > 0]
+        lower_cone = lower_cone[lower_cone[:, -1] >= 0]
         lower_cone = lower_cone[lower_cone[:, -1] < len(lstFilesDCM)]
         volume[center_cone[:, 2].astype(int), center_cone[:, 0].astype(int), center_cone[:, 1].astype(
             int)] = 6000
@@ -342,16 +390,16 @@ class cone:
         """
         # pixal world to patient coordinate system
         centerbasepoint = self.voxel_to_patient(self.AffinMatrix, np.array(
-            (int(np.round(row_ind - cone.distfromskin / self.rowpixelspacing)), column_ind,
+            (int(np.round(row_ind - Cone.distfromskin / self.rowpixelspacing)), column_ind,
              slice_ind, 1)))[0:3]
         upperapexpoint = self.voxel_to_patient(self.AffinMatrix, np.array(
-            (int(np.round(row_ind + cone.skintouppertarget / self.rowpixelspacing)), column_ind,
+            (int(np.round(row_ind + Cone.skintouppertarget / self.rowpixelspacing)), column_ind,
              slice_ind, 1)))[0:3]
         centeralapexpoint = self.voxel_to_patient(self.AffinMatrix, np.array(
-            (int(np.round(row_ind + cone.skintotargetcenter / self.rowpixelspacing)), column_ind,
+            (int(np.round(row_ind + Cone.skintotargetcenter / self.rowpixelspacing)), column_ind,
              slice_ind, 1)))[0:3]
         lowerapexpoint = self.voxel_to_patient(self.AffinMatrix, np.array(
-            (int(np.round(row_ind + cone.skintolowertarget / self.rowpixelspacing)), column_ind,
+            (int(np.round(row_ind + Cone.skintolowertarget / self.rowpixelspacing)), column_ind,
              slice_ind, 1)))[0:3]
         return centerbasepoint, upperapexpoint, centeralapexpoint, lowerapexpoint
 
@@ -380,6 +428,14 @@ class cone:
         multi_aff[:3, 3] = pos_pat_0
         multi_aff[:3, 2] = np.subtract(pos_pat_N, pos_pat_0) / (NZ - 1)
         return multi_aff
+
+    def volume_for_cone(self, vol, sliceind, R, angle):
+        if sliceind + R > len(lstFilesDCM):
+            return self.volume_rotation(vol[sliceind - R: len(lstFilesDCM), :, :], angle), sliceind - R + 20
+        elif sliceind - R < 0:
+            return self.volume_rotation(vol[0:sliceind + R, :, :], angle), 0
+        else:
+            return self.volume_rotation(vol[sliceind - R:sliceind + R, :, :], angle), sliceind - R + 20
 
     def voxel_to_patient(self, affine_matrix, voxel_coordinates):
         """
@@ -448,18 +504,7 @@ class cone:
         coorArray[:, 2] = Z.flatten()
         coorArray[:, 3] = ones
         pixcoorArray = np.round(coorArray.dot(self.invAffinMatrix.T)[:, :-1]) # calculate the transformation between patient coordinate system back to voxel coordinate system
-        '''
-        ones = np.full(X.shape, 1)
-        coorArray = np.zeros((4, len(ones), len(ones)))
-        coorArray[0, :, :] = X
-        coorArray[1, :, :] = Y
-        coorArray[2, :, :] = Z
-        coorArray[3, :, :] = ones
-        pixcoorArray = np.zeros(coorArray.shape)
-        for k in range(0, len(ones)):
-            for j in range(0, len(ones)):
-                pixcoorArray[:, k, j] = np.round(np.matmul(self.invAffinMatrix, coorArray[:, k, j]))
-        '''
+
         return pixcoorArray
 
 class BodyMask:
@@ -611,38 +656,6 @@ def ap_drr(ArrayDicomMu, Angle, airattcoeff):
     s = time.time()
     print('DRR Run Time is', s - t)
     return APBaseAngleDRR
-
-'''
-def ap_drr2(ArrayDicomMu, Angle):
-
-    APBaseAngleDRR = np.zeros((len(Angle), np.shape(ArrayDicomMu)[0], np.shape(ArrayDicomMu)[2]))
-    ArrayDicomDistancesPlane = np.full(np.shape(ArrayDicomMu), int(RefDs.PixelSpacing[1]) / 10)
-    MinusOneArrayAP = np.full(np.shape(ArrayDicomMu), -1)
-    t = time.time()
-    tasks = []
-    for i in range(0, len(Angle)):
-        tasks.append(Angle[i])
-    angle_bases = []
-    print("Time1: {:.2f}".format(time.time()-t))
-    #with multiprocessing.Pool(multiprocessing.cpu_count()) as p:
-    #    angle_base = p.map(partial(f, ArrayDicomMu=ArrayDicomMu), tasks)
-    #    angle_bases.append(angle_base)
-    for task in tasks:
-        print(task)
-        angle_base = partial(f, ArrayDicomMu=ArrayDicomMu)(task)
-        angle_bases.append(angle_base)
-        #need to ref SOPInstanceUID for quick load of already processed DICOMS
-    print("Time2: {:.2f}".format(time.time() - t))
-    for i in range(0, len(Angle)):
-        APBaseAngleDRR[i, :, :] = np.sum(
-            np.rot90(np.exp(MinusOneArrayAP * angle_bases[i] * ArrayDicomDistancesPlane), k=2, axes=(1, 2)), axis=1)
-        # new cal for HUtoMU table
-    print("Time3: {:.2f}".format(time.time() - t))
-
-    s = time.time()
-    print('DRR Run Time is', s - t)
-    return APBaseAngleDRR
-'''
 
 
 def data_to_dict(drr_vol, ctcutdata, kVp, data_dict):
@@ -940,7 +953,7 @@ if __name__ == '__main__':
     #trackerMIP = IndexTracker(ax1, MIP, 'MIP')
     trackerAP = IndexTracker(ax1, AP, 'DRR')
      #getting the angle at which the user is corrently viewing
-    Cone = cone(ArrayDicomHu, ax2, ax3, ax4, trackerAP)
+    Cone = Cone(ArrayDicomHu, ax2, ax3, ax4, trackerAP)
     fig.canvas.mpl_connect('scroll_event', trackerAP.on_scroll)
     fig.canvas.mpl_connect('button_press_event', Cone.on_click)
 
