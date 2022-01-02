@@ -78,7 +78,6 @@ class IndexTracker:
         :param event:
         :return:
         """
-        # print("%s %s" % (event.button, event.step))
         if event.button == 'up':
             self.ind = (self.ind + 1) % self.slices
         else:
@@ -223,7 +222,6 @@ class Cone:
         self.axAxial_slide = plt.axes([self.posAxial.x0, self.posAxial.y0-0.1, 0.2, 0.01])  # Slider position
         self.AxialSlider = Slider(self.axAxial_slide, '', valmin=0, valmax=self.basevol.shape[0]-1, valstep=1, valinit=self.basevol.shape[0]/2,
                                     orientation='horizontal')  # slider range
-        #ax_slide.set_xticks(np.arange(self.sliceind))
         self.AxialSlider.valtext.set_visible(True)
         self.AxialSlider.label.set_color('white')
         self.AxialSlider.valtext.set_color('white')
@@ -234,7 +232,6 @@ class Cone:
         self.SagittalSlider = Slider(self.axSagittal_slide, '', valmin=0, valmax=self.basevol.shape[2] - 1, valinit=self.basevol.shape[2]/2,
                                valstep=1,
                                orientation='horizontal')  # slider range
-        # ax_slide.set_xticks(np.arange(self.sliceind))
         self.SagittalSlider.valtext.set_visible(True)
         self.SagittalSlider.label.set_color('white')
         self.SagittalSlider.valtext.set_color('white')
@@ -246,7 +243,6 @@ class Cone:
         self.CoronalSlider = Slider(self.axCoronal_slide, '', valmin=0, valmax=self.basevol.shape[1] - 1, valinit=self.basevol.shape[1]/2,
                                      valstep=1,
                                      orientation='horizontal')  # slider range
-        # ax_slide.set_xticks(np.arange(self.sliceind))
         self.CoronalSlider.valtext.set_visible(True)
         self.CoronalSlider.label.set_color('white')
         self.CoronalSlider.valtext.set_color('white')
