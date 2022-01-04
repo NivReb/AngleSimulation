@@ -9792,3 +9792,9 @@ venv/lib/python3.9/site-packages/wslink/__pycache__/websocket.cpython-39.pyc
 venv/lib/python3.9/site-packages/wslink/backends/__pycache__/__init__.cpython-39.pyc
 venv/lib/python3.9/site-packages/wslink/backends/aiohttp/__pycache__/__init__.cpython-39.pyc
 venv/lib/python3.9/site-packages/wslink/backends/aiohttp/__pycache__/launcher.cpython-39.pyc
+.git.bfg-report/2022-01-02/16-31-27/cache-stats.txt
+.git.bfg-report/2022-01-02/16-31-27/deleted-files.txt
+.git.bfg-report/2022-01-02/16-31-27/object-id-map.old-new.txt
+.git.bfg-report/2022-01-02/16-31-27/protected-dirt/0e1904ee-HEAD.csv
+bfg-1.14.0.jar
+*.pyc

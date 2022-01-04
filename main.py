@@ -297,20 +297,10 @@ class Cone:
             self.sliceind = np.round(event.ydata)
             self.columnind = np.round(event.xdata)
             self.indexTracker.click_target_marking(self.sliceind.astype(int), self.columnind.astype(int))
-            '''
-            # remove old cone after new click
-            s, c, r = self.basevol.shape
-            self.data_vol = np.full((s, c + Cone.gelpadThick, r + 20), -1000)
-            self.data_vol[:, 44:44 + c, 9:9 + r] = self.basevol
-            simulationR = 19
-            '''
             self.slice = ndimage.rotate(self.basevol[self.sliceind.astype(int),:,:], float(self.angle), reshape=False, mode='constant', cval=-1000)
             o = time.time()
-            #self.data_vol, self.correctionfactor = self.volume_for_cone(self.data_vol, self.sliceind.astype(int), int(Cone.R-simulationR), self.angle)# correction factor = factor to change sliceind to new place.
-            #l = time.time()
             self.conevol = np.zeros(self.basevol.shape) #set volume dimensions for cone.
             #find skin row index after rotation with cutted volume
-            #self.clickedslice = self.data_vol[self.sliceind.astype(int) - self.correctionfactor, :, :]
             clickedcolumn = self.slice[:, self.columnind.astype(int)]
             if any(x in clickedcolumn for x in range(-250, 0)):
                 self.rowind = np.where(clickedcolumn > -250)[0][0]
@@ -318,7 +308,8 @@ class Cone:
                 print('Selected Target is out of the Allowed Therapeutic Area, please select target within Therapeutic Area')
 
             g = time.time()
-            base, up, center, low = self.cone_coordinates(self.rowind, self.columnind, self.sliceind) # cone points coordinates in patient coordinate system
+            coneind = self.find_cone_crit_indices(self.slice.shape, self.rowind.astype(int), self.columnind.astype(int))
+            base, up, center, low = self.cone_coordinates(coneind) # cone points coordinates in patient coordinate system
             centercone = self.cone(center, base, 0, Cone.R) # center cone indexes
             uppercone = self.cone(up, base, 0, Cone.R)# upper cone indexes
             lowercone = self.cone(low, base, 0, Cone.R)# lower cone indexes
@@ -335,65 +326,31 @@ class Cone:
             print('click target cal time', f-t)
             self.update_CT()
 
-    def clicked_points_index(self, clickedimagesize, angle, clickpointcolumn, rowind):
-        '''
-        :param clickedimagesize: image size need for image centering befor rotation
-        :param angle: angle at which  point need to rerotate
-        :param clickpointcolumn: column pixel index at which user clicked at rotated image
-        :param rowind: row pixel index at which user clicked at rotated image
-        :return: pixel coordinate at not rotated image
-        '''
-        rotmat = ([np.cos(-angle * np.pi / 180), -np.sin(-angle * np.pi / 180), 0],
-                  [np.sin(-angle * np.pi / 180), np.cos(-angle * np.pi / 180), 0],
-                  [0, 0, 1])
-        movetocentermat = ([1, 0, 0],
-                           [0, 1, 0],
-                           [(-clickedimagesize[1]) / 2, (-clickedimagesize[0]) / 2, 1])
-        backtocornermat = ([1, 0, 0],
-                           [0, 1, 0],
-                           [(clickedimagesize[1]) / 2, (clickedimagesize[0]) / 2, 1])
-        transmat = np.linalg.multi_dot([backtocornermat, rotmat, movetocentermat])
-        invtransmat = np.linalg.inv(transmat)
-        rotindvector = np.array([int(clickpointcolumn), int(rowind), 1])
-        point = np.matmul(transmat, rotindvector)
-        return np.matmul(invtransmat, rotindvector)
+    def find_cone_crit_indices(self, imageshape, rowind, columnind):
+        r = time.time()
+        simarray = np.zeros(imageshape)
+        simarray[rowind - Cone.distfromskin, columnind] = 1
+        simarray[rowind + Cone.skintouppertarget, columnind] = 1
+        simarray[rowind + round(Cone.skintotargetcenter), columnind] = 1
+        simarray[rowind + Cone.skintolowertarget, columnind] = 1
+        rotmat = ndimage.rotate(simarray, float(-self.angle), reshape=False, mode='constant', cval=0)
+        N = 4
+        # Convert it into a 1D array
+        a_1d = rotmat.flatten()
 
-    def offset_cal(self, vol_shape, vol_dim, angle, axes):
-        #input_arr = np.asarray(chopedvol)
-        ndim = vol_dim
-        axes = axes
+        # Find the indices in the 1D array
+        idx_1d = a_1d.argsort()[-N:]
 
-        if ndim < 2:
-            raise ValueError('input array should be at least 2D')
+        # convert the idx_1d back into indices arrays for each dimension
+        row, column = np.unravel_index(idx_1d, rotmat.shape)
 
-        axes = list(axes)
-
-        if len(axes) != 2:
-            raise ValueError('axes should contain exactly two values')
-
-        if not all([float(ax).is_integer() for ax in axes]):
-            raise ValueError('axes should contain only integer values')
-
-        if axes[0] < 0:
-            axes[0] += ndim
-        if axes[1] < 0:
-            axes[1] += ndim
-        if axes[0] < 0 or axes[1] < 0 or axes[0] >= ndim or axes[1] >= ndim:
-            raise ValueError('invalid rotation plane specified')
-
-        c, s = special.cosdg(angle), special.sindg(angle)
-
-        rot_matrix = np.array([[c, s],
-                               [-s, c]])
-        img_shape = np.asarray(vol_shape)
-
-        axes.sort()
-        in_plane_shape = img_shape[axes]
-        out_plane_shape = img_shape[axes]
-        out_center = rot_matrix @ ((out_plane_shape - 1) / 2) # perform matrix multiplication, same as np.matmul(rot_matrix, ((out_plane_shape - 1)/2)
-        in_center = (in_plane_shape - 1) / 2
-        offset = in_center - out_center
-        return offset
+        indholder = np.zeros([4, 2])
+        indholder[:, 0] = row
+        indholder[:, 1] = column
+        indholdersorted = indholder[np.argsort(indholder, axis=0)[:, 0]]
+        y = time.time()
+        print("cone index search time", y - r)
+        return indholdersorted
 
     def update_CT(self):
         """
@@ -416,22 +373,7 @@ class Cone:
         :param volume: CT volume after rotation in the angle user chose
         :return: CT volume after cones implementation
         """
-        '''
-        # Removes indices that are out of volume because of volume size reduction
-        center_cone = center_cone[center_cone[:, -1] > self.sliceind.astype(int) - effectiveR]
-        center_cone = center_cone[center_cone[:, -1] < self.sliceind.astype(int) + effectiveR]
-        upper_cone = upper_cone[upper_cone[:, -1] > self.sliceind.astype(int) - effectiveR]
-        upper_cone = upper_cone[upper_cone[:, -1] < self.sliceind.astype(int) + effectiveR]
-        lower_cone = lower_cone[lower_cone[:, -1] > self.sliceind.astype(int) - effectiveR]
-        lower_cone = lower_cone[lower_cone[:, -1] < self.sliceind.astype(int) + effectiveR]
-        # slice index correction after volume size reduction
-        if self.sliceind - effectiveR < 0:
-            pass
-        else:
-            upper_cone[:, 2] = upper_cone[:, 2] - min(upper_cone[:, 2])
-            center_cone[:, 2] = center_cone[:, 2] - min(center_cone[:, 2])
-            lower_cone[:, 2] = lower_cone[:, 2] - min(lower_cone[:, 2])
-        '''
+
         # slice index correction after volume size reduction
         center_cone = center_cone[center_cone[:, -1] >= 0]
         center_cone = center_cone[center_cone[:, -1] < len(lstFilesDCM)]
@@ -447,7 +389,7 @@ class Cone:
             int)] = 6000
         return volume
 
-    def cone_coordinates(self, row_ind, column_ind, slice_ind):
+    def cone_coordinates(self, rotconeind):
         """
                         Transformation from voxel to patient coordinate system for cone calculation.
         :param row_ind: clicked row index
@@ -455,36 +397,16 @@ class Cone:
         :param slice_ind: clicked slice index
         :return: points coordinates in patient world which define cones
         """
-        #find coordinates for cone
-        offset = self.offset_cal(self.basevol.shape, self.basevol.ndim, self.angle, axes = (1, 2))
-        centerbase_notrotpoint = self.clicked_points_index(self.slice.shape, self.angle,
-                                                      column_ind + offset[1],
-                                                      row_ind - Cone.distfromskin / self.rowpixelspacing + offset[0])
-        upperapex_notrotpoint = self.clicked_points_index(self.slice.shape, self.angle,
-                                                     column_ind + offset[1],
-                                                     row_ind + Cone.skintouppertarget / self.rowpixelspacing + offset[
-                                                         0])
-        centerapex_notrotpoint = self.clicked_points_index(self.slice.shape, self.angle,
-                                                      column_ind + offset[1],
-                                                      row_ind + Cone.skintotargetcenter / self.rowpixelspacing + offset[
-                                                          0])
-        lowerapex_notrotpoint = self.clicked_points_index(self.slice.shape, self.angle,
-                                                     column_ind + offset[1],
-                                                     row_ind + Cone.skintolowertarget / self.rowpixelspacing + offset[
-                                                         0])
-        # pixal world to patient coordinate system
-        centerbasepoint = self.voxel_to_patient(self.AffinMatrix, np.array([
-            np.round(centerbase_notrotpoint[1]), round(centerbase_notrotpoint[0]),
-             slice_ind, 1]))[0:3]
-        upperapexpoint = self.voxel_to_patient(self.AffinMatrix, np.array([
-            np.round(upperapex_notrotpoint[1]), round(upperapex_notrotpoint[0]),
-             slice_ind, 1]))[0:3]
-        centeralapexpoint = self.voxel_to_patient(self.AffinMatrix, np.array([
-            np.round(centerapex_notrotpoint[1]), np.round(centerapex_notrotpoint[0]),
-             slice_ind, 1]))[0:3]
-        lowerapexpoint = self.voxel_to_patient(self.AffinMatrix, np.array([
-            np.round(lowerapex_notrotpoint[1]), np.round(lowerapex_notrotpoint[0]),
-             slice_ind, 1]))[0:3]
+
+        centerbasepoint = self.voxel_to_patient(self.AffinMatrix,
+                                           np.array((rotconeind[0, 0], rotconeind[0, 1], self.sliceind.astype(int), 1)))[0:3]
+        upperapexpoint = self.voxel_to_patient(self.AffinMatrix,
+                                          np.array((rotconeind[1, 0], rotconeind[1, 1], self.sliceind.astype(int), 1)))[0:3]
+        centeralapexpoint = self.voxel_to_patient(self.AffinMatrix,
+                                             np.array((rotconeind[2, 0], rotconeind[2, 1], self.sliceind.astype(int), 1)))[0:3]
+        lowerapexpoint = self.voxel_to_patient(self.AffinMatrix,
+                                          np.array((rotconeind[3, 0], rotconeind[3, 1], self.sliceind.astype(int), 1)))[0:3]
+
         return centerbasepoint, upperapexpoint, centeralapexpoint, lowerapexpoint
 
     def a_multi_matrix(self):
@@ -989,7 +911,7 @@ def find_high_Patient_volume_slice_cut_volume_accordingly(vol, vol_increase):
 
 
 def row_and_col_indices_for_volume_cupping(vol, largest_slice_ind, vol_increase):
-    s = time.time()
+    t = time.time()
     body = BodyMask(vol[largest_slice_ind, :, :])
     bodymask = body.mask_body()
     first_row_volume_encounter = np.min([i for i in first_nonzero(bodymask, 0) if i > 0])
@@ -1003,7 +925,7 @@ def row_and_col_indices_for_volume_cupping(vol, largest_slice_ind, vol_increase)
     data_vol[:, int(vol_increase[0] * 3 / 4 - 1):int(vol_increase[0] * 3 / 4 - 1) + r,
                 int(vol_increase[1] / 2 - 1):int(vol_increase[1] / 2 - 1) + c] = chopedvol
     f = time.time()
-    print('volume chopping time', f-s)
+    print('volume chopping time', f-t)
     return data_vol
 
 def first_nonzero(arr, axis, invalid_val=-1):
