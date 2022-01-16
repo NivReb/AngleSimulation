@@ -1,3 +1,5 @@
+import tty
+
 import numpy as np
 import pydicom as dcm
 import matplotlib.pyplot as plt
@@ -13,6 +15,7 @@ from scipy import ndimage, interpolate
 from matplotlib.backend_bases import MouseButton
 from matplotlib.widgets import RangeSlider, Button, RadioButtons, Slider
 import matplotlib.lines as lines
+import cv2
 import time
 import json
 from tkinter import *
@@ -154,7 +157,7 @@ class IndexTracker:
         self.ax.add_patch(cirup)
         self.ax.add_patch(cirlow)
         self.ax.add_patch(targetline)
-        print(self.ax.patches)
+        #print(self.ax.patches)
 
 
 class Cone:
@@ -293,19 +296,17 @@ class Cone:
             self.angle = Angle[self.indexTracker.ind]
             x, y = event.x, event.y
             #ax2 = event.inaxes  # the axes instance
-            print('data coords %f %f' % (np.round(event.xdata), np.round(event.ydata)))
+            #print('data coords %f %f' % (np.round(event.xdata), np.round(event.ydata)))
             self.sliceind = np.round(event.ydata)
             self.columnind = np.round(event.xdata)
             self.indexTracker.click_target_marking(self.sliceind.astype(int), self.columnind.astype(int))
             self.slice = ndimage.rotate(self.basevol[self.sliceind.astype(int),:,:], float(self.angle), reshape=False, mode='constant', cval=-1000)
             o = time.time()
             self.conevol = np.zeros(self.basevol.shape) #set volume dimensions for cone.
-            #find skin row index after rotation with cutted volume
+            #find skin row index after rotation with cutted volumey
             clickedcolumn = self.slice[:, self.columnind.astype(int)]
-            if any(x in clickedcolumn for x in range(-250, 0)):
-                self.rowind = np.where(clickedcolumn > -250)[0][0]
-            else:
-                print('Selected Target is out of the Allowed Therapeutic Area, please select target within Therapeutic Area')
+            # Bug - it seems like rowind sometimes can't be found, or it set it no correctly.
+            self.rowind = np.where(clickedcolumn > -250)[0][0]
 
             g = time.time()
             coneind = self.find_cone_crit_indices(self.slice.shape, self.rowind.astype(int), self.columnind.astype(int))
@@ -315,42 +316,85 @@ class Cone:
             lowercone = self.cone(low, base, 0, Cone.R)# lower cone indexes
 
             d = time.time()
+
             self.conevol = self.cone_volume_integrate(self.conevol, centercone, uppercone, lowercone, Cone.R)
+            h = time.time()
+            # slowest chunk of code in cone integration
             self.basevol = self.basevol + self.conevol
             self.clickcounter += 1
             f = time.time()
+
             print('vol rotation time is', o-t)
             print('Finding row skin index time is', g-o)
             print('Cone calculation time is', d-g)
-            print('Cone integration in vol time is', f-d)
+            print('Cone integration in vol time is', f-h)
+            print('Cone volume integration function running time', h-d)
             print('click target cal time', f-t)
+
             self.update_CT()
 
     def find_cone_crit_indices(self, imageshape, rowind, columnind):
+        '''
+
+        :param imageshape:
+        :param rowind:
+        :param columnind:
+        :return: Indices which will be used to build acoustic cone in the right place. Those indices are reflecting the place of cone in an unrotated CT images.
+        '''
         r = time.time()
+        # Set an binary image with cone indices received from user
         simarray = np.zeros(imageshape)
         simarray[rowind - Cone.distfromskin, columnind] = 1
         simarray[rowind + Cone.skintouppertarget, columnind] = 1
         simarray[rowind + round(Cone.skintotargetcenter), columnind] = 1
         simarray[rowind + Cone.skintolowertarget, columnind] = 1
+        # Rotate binary image in the opposite direction to find indices in the not rotated image
         rotmat = ndimage.rotate(simarray, float(-self.angle), reshape=False, mode='constant', cval=0)
-        N = 4
+
+        # Create a binary image after rotation with threshold of 0.1.
+        binary_image = cv2.threshold(rotmat, 0.1, 1, cv2.THRESH_BINARY)[1]
+        # Finding clusters and assigning each cluster a number.
+        num_labels, labels_im = cv2.connectedComponents(binary_image.astype(np.uint8) * 255)
+
+        idxs = []
+        # find the max value in each cluster and returning its index
+        for label in range(1, num_labels):
+            mask = np.zeros(rotmat.shape)
+            mask[labels_im == label] = 1
+            idxs.append(np.unravel_index((rotmat * mask).argmax(), rotmat.shape))
+
+        #print(idxs)
+        '''
+
+        N = 8
         # Convert it into a 1D array
         a_1d = rotmat.flatten()
 
         # Find the indices in the 1D array
         idx_1d = a_1d.argsort()[-N:]
+        idx_1d_test = a_1d.argsort()[-4:]
+        # validate that indices are not close to each other
+        ind_1d = np.zeros(N)
+
+        for j in range(N-1):
+            ind_1d[j] = idx_1d[N-1-j]
+            for i in range(N-1, -1, -1):
+                if abs(ind_1d[j] - idx_1d[i]) < rotmat.shape[1]*5:
+                    idx_1d[i] = 0
 
         # convert the idx_1d back into indices arrays for each dimension
-        row, column = np.unravel_index(idx_1d, rotmat.shape)
+        row, column = np.unravel_index(ind_1d[0:4].astype(int), rotmat.shape)
+        row1, column1 = np.unravel_index(idx_1d_test, rotmat.shape)
 
         indholder = np.zeros([4, 2])
         indholder[:, 0] = row
         indholder[:, 1] = column
         indholdersorted = indholder[np.argsort(indholder, axis=0)[:, 0]]
+        '''
         y = time.time()
-        print("cone index search time", y - r)
-        return indholdersorted
+
+        print("find_cone_crit_indices Function running time", y - r)
+        return idxs
 
     def update_CT(self):
         """
@@ -373,7 +417,7 @@ class Cone:
         :param volume: CT volume after rotation in the angle user chose
         :return: CT volume after cones implementation
         """
-
+        s = time.time()
         # slice index correction after volume size reduction
         center_cone = center_cone[center_cone[:, -1] >= 0]
         center_cone = center_cone[center_cone[:, -1] < len(lstFilesDCM)]
@@ -387,6 +431,8 @@ class Cone:
             int)] = 6000
         volume[lower_cone[:, 2].astype(int), lower_cone[:, 0].astype(int), lower_cone[:, 1].astype(
             int)] = 6000
+        e = time.time()
+        print('cone_volume_integrate Function running time', e-s)
         return volume
 
     def cone_coordinates(self, rotconeind):
@@ -397,16 +443,17 @@ class Cone:
         :param slice_ind: clicked slice index
         :return: points coordinates in patient world which define cones
         """
-
+        s = time.time()
         centerbasepoint = self.voxel_to_patient(self.AffinMatrix,
-                                           np.array((rotconeind[0, 0], rotconeind[0, 1], self.sliceind.astype(int), 1)))[0:3]
+                                           np.array((rotconeind[0][0], rotconeind[0][1], self.sliceind.astype(int), 1)))[0:3]
         upperapexpoint = self.voxel_to_patient(self.AffinMatrix,
-                                          np.array((rotconeind[1, 0], rotconeind[1, 1], self.sliceind.astype(int), 1)))[0:3]
+                                          np.array((rotconeind[1][0], rotconeind[1][1], self.sliceind.astype(int), 1)))[0:3]
         centeralapexpoint = self.voxel_to_patient(self.AffinMatrix,
-                                             np.array((rotconeind[2, 0], rotconeind[2, 1], self.sliceind.astype(int), 1)))[0:3]
+                                             np.array((rotconeind[2][0], rotconeind[2][1], self.sliceind.astype(int), 1)))[0:3]
         lowerapexpoint = self.voxel_to_patient(self.AffinMatrix,
-                                          np.array((rotconeind[3, 0], rotconeind[3, 1], self.sliceind.astype(int), 1)))[0:3]
-
+                                          np.array((rotconeind[3][0], rotconeind[3][1], self.sliceind.astype(int), 1)))[0:3]
+        e = time.time()
+        print('cone_coordinates Function running time', e-s)
         return centerbasepoint, upperapexpoint, centeralapexpoint, lowerapexpoint
 
     def a_multi_matrix(self):
@@ -450,7 +497,10 @@ class Cone:
         :param voxel_coordinates: Coordinates to transform
         :return: Voxel location in patient coordinate system
         """
+        s = time.time()
         voxel_location = np.matmul(affine_matrix, voxel_coordinates)
+        e = time.time()
+        print('voxel_to_patient Function running time', e-s)
         return voxel_location
 
     def volume_rotation(self, vol, angle):
@@ -475,6 +525,7 @@ class Cone:
         :param R1: - radius at cone base
         :return: Array with cone indices
         """
+        s = time.time()
         # vector in direction of axis
         v = p1 - p0
         # find magnitude of vector
@@ -510,7 +561,8 @@ class Cone:
         coorArray[:, 2] = Z.flatten()
         coorArray[:, 3] = ones
         pixcoorArray = np.round(coorArray.dot(self.invAffinMatrix.T)[:, :-1]) # calculate the transformation between patient coordinate system back to voxel coordinate system
-
+        e = time.time()
+        print('Cone Function running time', e-s)
         return pixcoorArray
 
 class BodyMask:
@@ -526,12 +578,15 @@ class BodyMask:
                     Find the first row at clicked column intersecting mask.
         :return: row click index
         """
+        s = time.time()
         #sliceforcontour = self.rotvol[self.sliceind.astype(int), :, :]
         edges = measure.find_contours(self.slicetomask, level=-250, fully_connected='low',
                                            positive_orientation='high') # marching square algorithm
         bodycontour = self.find_body(edges)
         body = self.create_mask_from_polygon(self.slicetomask, bodycontour)
         #rowind = np.argwhere(body[:, self.columnind.astype(int)] == 1)[0]
+        e = time.time()
+        print('mask_body Function running time', e-s)
         return body
 
     def find_body(self, contours):
@@ -545,6 +600,7 @@ class BodyMask:
 
                     Returns: contours that correspond to the body area
                     """
+        s = time.time()
         body_contours = []
         vol_contours = []
 
@@ -563,6 +619,8 @@ class BodyMask:
             vol_contours, body_contours = (list(t) for t in
                     zip(*sorted(zip(vol_contours, body_contours))))
             body_contours.pop(-1)
+        e = time.time()
+        print('find_body function running time', e-s)
         return body_contours  # only body left !!!
 
     def create_mask_from_polygon(self, image, contours):
@@ -576,6 +634,7 @@ class BodyMask:
                     Returns:
 
                     """
+        s = time.time()
         body_mask = np.array(Image.new('L', image.shape, 0))
         for contour in contours:
             x = contour[:, 0]
@@ -587,6 +646,8 @@ class BodyMask:
             body_mask += mask
 
         body_mask[body_mask > 1] = 1  # sanity check to make 100% sure that the mask is binary
+        e = time.time()
+        print('create_mask_from_polygon function running time', e-s)
         return body_mask.T
 
 

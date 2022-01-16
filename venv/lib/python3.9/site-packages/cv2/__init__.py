@@ -12,6 +12,7 @@ from . import gapi
 from . import misc
 from . import utils
 from . import data
+from . import version
 
 __all__ = []
 
@@ -49,7 +50,7 @@ def __load_extra_py_code_for_module(base, name, enable_debug_print=False):
         setattr(py_module, "_native", native_module)
         for k, v in filter(lambda kv: not hasattr(py_module, kv[0]),
                            native_module.__dict__.items()):
-            if enable_debug_print: print('    symbol: {} = {}'.format(k, v))
+            if enable_debug_print: print('    symbol({}): {} = {}'.format(name, k, v))
             setattr(py_module, k, v)
     return True
 
@@ -59,6 +60,7 @@ def __collect_extra_submodules(enable_debug_print=False):
         return all((
              # module is not internal
              not module.startswith("_"),
+             not module.startswith("python-"),
              # it is not a file
              os.path.isdir(os.path.join(_extra_submodules_init_path, module))
         ))
