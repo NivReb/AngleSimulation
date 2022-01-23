@@ -92,7 +92,7 @@ class BodyMask:
             polygon_tuple = list(zip(x, y))
             img = Image.new('L', image.shape, 0)
             ImageDraw.Draw(img).polygon(polygon_tuple, outline=0, fill=1)
-            mask = np.array(img)
+            mask = img
             body_mask += mask
 
         body_mask[body_mask > 1] = 1  # sanity check to make 100% sure that the mask is binary
@@ -177,7 +177,7 @@ def a_multi_matrix():
     multi_aff[:3, 3] = pos_pat_0
     multi_aff[:3, 2] = np.subtract(pos_pat_N, pos_pat_0) / (NZ - 1)
     a_mat_e = time.time()
-    print('Affine Matrix calculation time: %s' % (a_mat_e-a_mat_s))
+    #print('Affine Matrix calculation time: %s' % (a_mat_e-a_mat_s))
     return multi_aff
 
 
@@ -190,7 +190,7 @@ def volume_rotation(vol, angle):
     rot_s = time.time()
     rotatedVol = ndimage.rotate(vol, float(angle), axes=(1, 2), reshape=False, mode='constant', cval=-1000)
     rot_e = time.time()
-    print('volume rotation time: %s' % (rot_e-rot_s))
+    #print('volume rotation time: %s' % (rot_e-rot_s))
     return rotatedVol
 
 
@@ -310,9 +310,16 @@ def cone(p0, p1, R0, R1):
     #    pixcoorArray[k, :] = np.round(np.matmul(invAffinMatrix, coorArray[k, :]))
     pixcoorArray = np.round(coorArray.dot(invAffinMatrix.T)[:,:-1])
     pixcoorArray[:, 2][pixcoorArray[:, 2] >= len(lstFilesDCM)] = len(lstFilesDCM) - 1
+    '''
+    slice_cone = np.where(pixcoorArray[:, 2] == clickedsliceind)
+    x_cone = pixcoorArray[slice_cone, 0]
+    y_cone = pixcoorArray[slice_cone, 1]
+    plt.plot(x_cone, y_cone, color='green', marker=".")
+    plt.show()
+    '''
     cone_d = time.time()
-    print('cone corr place cal time: %s' % (cone_e-cone_s))
-    print('cone corr to voxal', cone_d-cone_e)
+    #print('cone corr place cal time: %s' % (cone_e-cone_s))
+    #print('cone corr to voxal', cone_d-cone_e)
     return pixcoorArray#, coorArray
 
 
@@ -341,7 +348,7 @@ def ref_point_for_cone_rotation(slice, columnind, sliceind, distolow, distocente
         (int(np.round(rowind + distolow / rowspacing)), columnind, sliceind, 1)))[0:3]
 
     f = time.time()
-    print('cone based image time', f-s)
+    #print('cone based image time', f-s)
     return centerbasepoint, centeralapexpoint
 
 
@@ -365,35 +372,28 @@ def find_high_Patient_volume_slice(vol):
         slice_vol.append(np.count_nonzero(body == 1))
     maxvol = max(slice_vol)
     f = time.time()
-    print('time to find largest slice in volume', f-s)
+    #print('time to find largest slice in volume', f-s)
     return slice_vol.index(maxvol)
 
 
 def row_and_col_indices_for_volume_cutting(vol, largest_slice_ind, row_addition, column_addition):
     s = time.time()
-    #edges = measure.find_contours(vol[largest_slice_ind, :, :], level=-250, fully_connected='low', positive_orientation='high')
-    #bodycontour = find_body(edges)
-    #body = create_mask_from_polygon(vol[largest_slice_ind, :, :], bodycontour)
+    # Create a boolian mask from the largest body volume slice
     body = BodyMask(vol[largest_slice_ind, :, :])
     bodymask = body.mask_body()
+    # Within that slice find the rows and columns that delimit the patient body
     first_row_volume_encounter = np.min([i for i in first_nonzero(bodymask, 0) if i > 0])
     first_column_volume_encounter = np.min([i for i in first_nonzero(bodymask, 1) if i > 0])
     last_row_volume_encounter = np.max(last_nonzero(bodymask, 0))
     last_column_volume_encounter = np.max(last_nonzero(bodymask, 1))
+    # Slice the volume to the exact size that delimit the patient body
     chopedvol = vol[:, first_row_volume_encounter:last_row_volume_encounter, first_column_volume_encounter:last_column_volume_encounter]
+    # Create larger space to accommodate sliced volume and integrate the patient body inside it.
     s, r, c = chopedvol.shape # indexes 0:r-1, 0:c-1
     data_vol = np.full((s, r+row_addition, c+column_addition), -1000)
     data_vol[:, int(row_addition*3/4-1):int(row_addition*3/4-1)+r, int(column_addition/2-1):int(column_addition/2-1)+c] = chopedvol
-    #if last_column_volume_encounter >= np.shape(ArrayDicomHu)[2]-20:
-    #    last_column_volume_encounter = np.shape(ArrayDicomHu)[2]-20
-    #if last_row_volume_encounter >= np.shape(ArrayDicomHu)[1]-10:
-    #    last_row_volume_encounter = np.shape(ArrayDicomHu)[1]-10
-    #if first_row_volume_encounter <= 50:
-    #    first_row_volume_encounter = 50
-    #if first_column_volume_encounter <= 20:
-    #    first_column_volume_encounter = 20
     f = time.time()
-    print('volume chopping time', f-s)
+   # print('volume chopping time', f-s)
     return data_vol, first_row_volume_encounter, first_column_volume_encounter
 
 
@@ -425,6 +425,7 @@ def update_slider_axial(val):
     :return:
     """
     notrotvolimage.set_data(chopedvol[val, :, :].squeeze())
+    print(val)
     fig.canvas.draw_idle()
 
 
@@ -513,24 +514,22 @@ def find_cone_crit_indices(imageshape, rowind, columnind):
     simarray[coneappcentercol, columnind] = 1
     simarray[coneapplowcol, columnind] = 1
     rotmat = ndimage.rotate(simarray, float(-anglewillclick), reshape=False, mode='constant', cval=0)
-    N = 4
 
-    # Convert it into a 1D array
-    a_1d = rotmat.flatten()
+    # Create a binary image after rotation with threshold of 0.1.
+    binary_image = cv2.threshold(rotmat, 0.1, 1, cv2.THRESH_BINARY)[1]
+    # Finding clusters and assigning each cluster a number.
+    num_labels, labels_im = cv2.connectedComponents(binary_image.astype(np.uint8) * 255)
 
-    # Find the indices in the 1D array
-    idx_1d = a_1d.argsort()[-N:]
+    idxs = []
+    # find the max value in each cluster and returning its index
+    for label in range(1, num_labels):
+        mask = np.zeros(rotmat.shape)
+        mask[labels_im == label] = 1
+        idxs.append(np.unravel_index((rotmat * mask).argmax(), rotmat.shape))
 
-    # convert the idx_1d back into indices arrays for each dimension
-    row, column = np.unravel_index(idx_1d, rotmat.shape)
-
-    indholder = np.zeros([4, 2])
-    indholder[:, 0] = row
-    indholder[:, 1] = column
-    indholdersorted = indholder[np.argsort(indholder, axis=0)[:, 0]]
     y = time.time()
-    print("cone index search time", y-r)
-    return indholdersorted
+    #print("cone index search time", y-r)
+    return idxs
 # not used in the current settings
 
 
@@ -542,17 +541,20 @@ skintotargetcenter = 70.5 #mm
 skintolowertarget = 94 #mm
 clickedsliceind = 60
 clickpointcolumn = 239
-anglewillclick = 15
+anglewillclick = 0
 
+# Affine Matrix
 AffinMatrix = a_multi_matrix()
 
 
 row_vol_increase = 100
 column_vol_increase = 50
+
 largest_slice = find_high_Patient_volume_slice(ArrayDicomHu)
+
 chopedvol, row_movment, column_movment = row_and_col_indices_for_volume_cutting(ArrayDicomHu, largest_slice, row_vol_increase, column_vol_increase) # returnes cut volume
 
-#conevol, slicecorrectionfactor = volume_for_cone(ArrayDicomHu, clickedsliceind, R, anglewillclick) # integrate cone in
+
 # calculation for rotated volume with cone
 data_vol_rot = volume_rotation(chopedvol, anglewillclick)
 edges = measure.find_contours(data_vol_rot[clickedsliceind, :, :], level=-250, fully_connected='low', positive_orientation='high')
@@ -562,6 +564,67 @@ clickedslice = data_vol_rot[clickedsliceind, :, :]
 rowind = np.argwhere(body[:, clickpointcolumn] == 1)[0]
 rotconeind = find_cone_crit_indices(clickedslice.shape, rowind, clickpointcolumn)
 
+centerbasepoint = voxal_to_patient(AffinMatrix, np.array((rotconeind[0][0], rotconeind[0][1], clickedsliceind, 1)))[0:3]
+upperapexpoint = voxal_to_patient(AffinMatrix, np.array((rotconeind[1][0], rotconeind[1][1], clickedsliceind, 1)))[0:3]
+centeralapexpoint = voxal_to_patient(AffinMatrix, np.array((rotconeind[2][0], rotconeind[2][1], clickedsliceind, 1)))[0:3]
+lowerapexpoint = voxal_to_patient(AffinMatrix, np.array((rotconeind[3][0], rotconeind[3][1], clickedsliceind, 1)))[0:3]
+
+# cone integration in images without rotation
+uppercone = cone(upperapexpoint, centerbasepoint, 0, R)
+centercone = cone(centeralapexpoint, centerbasepoint, 0, R)
+lowercone = cone(lowerapexpoint, centerbasepoint, 0, R)
+
+chopedvol[uppercone[:, 2].astype(int), uppercone[:, 0].astype(int), uppercone[:, 1].astype(int)] = 6000
+chopedvol[centercone[:, 2].astype(int), centercone[:, 0].astype(int), centercone[:, 1].astype(int)] = 6000
+chopedvol[lowercone[:, 2].astype(int), lowercone[:, 0].astype(int), lowercone[:, 1].astype(int)] = 6000
+
+'''
+# cone integration for rotated images
+rotated_data_vol_with_cone, data_vol_with_cone = cone_integrate(data_vol_rot, chopedvol, rowind, clickpointcolumn, clickedsliceind, R)
+
+fig, (ax1, ax2, ax3) = plt.subplots(1, 3)
+
+#Axial Slider
+posAxialrot = ax1.get_position()
+axAxial_slide_rot = plt.axes([posAxialrot.x0, posAxialrot.y0-0.1, 0.2, 0.01])  # Slider position
+AxialSlider_rot = Slider(axAxial_slide_rot, '', valmin=0, valmax=rotated_data_vol_with_cone.shape[0]-1, valstep=1, valinit=rotated_data_vol_with_cone.shape[0]/2,
+                                    orientation='horizontal')  # slider range
+        #ax_slide.set_xticks(np.arange(self.sliceind))
+AxialSlider_rot.valtext.set_visible(True)
+AxialSlider_rot.label.set_color('white')
+AxialSlider_rot.valtext.set_color('white')
+AxialSlider_rot.on_changed(update_slider_axial_rot)
+
+posAxial = ax3.get_position()
+axAxial_slide = plt.axes([posAxial.x0, posAxial.y0-0.1, 0.2, 0.01])  # Slider position
+AxialSlider = Slider(axAxial_slide, '', valmin=0, valmax=data_vol_with_cone.shape[0]-1, valstep=1, valinit=data_vol_with_cone.shape[0]/2,
+                                    orientation='horizontal')  # slider range
+        #ax_slide.set_xticks(np.arange(self.sliceind))
+AxialSlider.valtext.set_visible(True)
+AxialSlider.label.set_color('white')
+AxialSlider.valtext.set_color('white')
+AxialSlider.on_changed(update_slider_axial)
+
+
+rotvolimage = ax1.imshow(rotated_data_vol_with_cone[clickedsliceind, :, :], cmap='gray')
+correctnot_rot_vol = ax2.imshow(ndimage.rotate(rotated_data_vol_with_cone[clickedsliceind, :, :], float(-anglewillclick), reshape=False, mode='constant', cval=-1000), cmap='gray')
+'''
+fig, ax = plt.subplots()
+notrotvolimage = ax.imshow(chopedvol[clickedsliceind, :, :], cmap='gray')
+posAxial = ax.get_position()
+axAxial_slide = plt.axes([posAxial.x0, posAxial.y0-0.1, 0.2, 0.01])  # Slider position
+AxialSlider = Slider(axAxial_slide, '', valmin=0, valmax=chopedvol.shape[0]-1, valstep=1, valinit=chopedvol.shape[0]/2,
+                                    orientation='horizontal')  # slider range
+AxialSlider.valtext.set_visible(True)
+#AxialSlider.label.set_color('black')
+#AxialSlider.valtext.set_color('black')
+AxialSlider.on_changed(update_slider_axial)
+plt.show()
+
+
+
+
+
 #clickedslice = data_vol_rot[clickedsliceind, :, :]
 #clickedcolumn = clickedslice[:, clickpointcolumn]
 #rowind = np.where(clickedcolumn > -250)[0][0]
@@ -570,6 +633,7 @@ rotconeind = find_cone_crit_indices(clickedslice.shape, rowind, clickpointcolumn
 #row_for_cone_not_rot = rowind - row_vol_increase/2  #row_movment
 
 # calculation of cone points in base image without rotation. input are the points needed for cone calculation at rotated image.
+'''
 #off set calculation
 input_arr = np.asarray(data_vol_rot)
 ndim = input_arr.ndim
@@ -608,8 +672,10 @@ out_center = rot_matrix @ ((out_plane_shape - 1) / 2)
 in_center = (in_plane_shape - 1) / 2
 offset = in_center - out_center
 print(offset)
+'''
 
 slice_for_cone_rotation = data_vol_rot[clickedsliceind, :, :]
+
 '''
 centerbase_notrotpoint = clicked_points_index(slice_for_cone_rotation.shape, anglewillclick, clickpointcolumn, rowind - distfromskin / RefDsFirst.PixelSpacing[0], offset)
 upperapex_notrotpoint = clicked_points_index(slice_for_cone_rotation.shape, anglewillclick, clickpointcolumn, rowind + skintouppertarget / RefDsFirst.PixelSpacing[0], offset)
@@ -632,15 +698,8 @@ centeralapexpoint = voxal_to_patient(AffinMatrix, np.array(
 lowerapexpoint = voxal_to_patient(AffinMatrix, np.array(
         (int(round(lowerapex_notrotpoint[1])), round(lowerapex_notrotpoint[0]), clickedsliceind, 1)))[0:3]
 '''
-centerbasepoint = voxal_to_patient(AffinMatrix, np.array((rotconeind[0, 0], rotconeind[0, 1], clickedsliceind, 1)))[0:3]
-upperapexpoint = voxal_to_patient(AffinMatrix, np.array((rotconeind[1, 0], rotconeind[1, 1], clickedsliceind, 1)))[0:3]
-centeralapexpoint = voxal_to_patient(AffinMatrix, np.array((rotconeind[2, 0], rotconeind[2, 1], clickedsliceind, 1)))[0:3]
-lowerapexpoint = voxal_to_patient(AffinMatrix, np.array((rotconeind[3, 0], rotconeind[3, 1], clickedsliceind, 1)))[0:3]
 
-# cone integration in images without rotation
-uppercone = cone(upperapexpoint, centerbasepoint, 0, R)
-centercone = cone(centeralapexpoint, centerbasepoint, 0, R)
-lowercone = cone(lowerapexpoint, centerbasepoint, 0, R)
+
 '''
 boolmat = np.zeros(chopedvol.shape)
 boolmat[uppercone[:, 2].astype(int), uppercone[:, 0].astype(int), uppercone[:, 1].astype(int)] = 1
@@ -654,42 +713,7 @@ rotconemat = rotconemat * 6000
 chopedvol = chopedvol + rotconemat
 '''
 
-chopedvol[uppercone[:, 2].astype(int), uppercone[:, 0].astype(int), uppercone[:, 1].astype(int)] = 6000
-chopedvol[centercone[:, 2].astype(int), centercone[:, 0].astype(int), centercone[:, 1].astype(int)] = 6000
-chopedvol[lowercone[:, 2].astype(int), lowercone[:, 0].astype(int), lowercone[:, 1].astype(int)] = 6000
 
-
-# cone integration for rotated images
-rotated_data_vol_with_cone, data_vol_with_cone = cone_integrate(data_vol_rot, chopedvol, rowind, clickpointcolumn, clickedsliceind, R)
-
-fig, (ax1, ax2, ax3) = plt.subplots(1, 3)
-
-#Axial Slider
-posAxialrot = ax1.get_position()
-axAxial_slide_rot = plt.axes([posAxialrot.x0, posAxialrot.y0-0.1, 0.2, 0.01])  # Slider position
-AxialSlider_rot = Slider(axAxial_slide_rot, '', valmin=0, valmax=rotated_data_vol_with_cone.shape[0]-1, valstep=1, valinit=rotated_data_vol_with_cone.shape[0]/2,
-                                    orientation='horizontal')  # slider range
-        #ax_slide.set_xticks(np.arange(self.sliceind))
-AxialSlider_rot.valtext.set_visible(True)
-AxialSlider_rot.label.set_color('white')
-AxialSlider_rot.valtext.set_color('white')
-AxialSlider_rot.on_changed(update_slider_axial_rot)
-
-posAxial = ax3.get_position()
-axAxial_slide = plt.axes([posAxial.x0, posAxial.y0-0.1, 0.2, 0.01])  # Slider position
-AxialSlider = Slider(axAxial_slide, '', valmin=0, valmax=data_vol_with_cone.shape[0]-1, valstep=1, valinit=data_vol_with_cone.shape[0]/2,
-                                    orientation='horizontal')  # slider range
-        #ax_slide.set_xticks(np.arange(self.sliceind))
-AxialSlider.valtext.set_visible(True)
-AxialSlider.label.set_color('white')
-AxialSlider.valtext.set_color('white')
-AxialSlider.on_changed(update_slider_axial)
-
-
-rotvolimage = ax1.imshow(rotated_data_vol_with_cone[clickedsliceind, :, :], cmap='gray')
-correctnot_rot_vol = ax2.imshow(ndimage.rotate(rotated_data_vol_with_cone[clickedsliceind, :, :], float(-anglewillclick), reshape=False, mode='constant', cval=-1000), cmap='gray')
-notrotvolimage = ax3.imshow(chopedvol[clickedsliceind, :, :], cmap='gray')
-plt.show()
 
 
 '''
