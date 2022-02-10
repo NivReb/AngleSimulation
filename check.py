@@ -8,7 +8,7 @@ import pylab as pl
 from natsort import natsorted
 from skimage import feature, measure
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-import cv2
+import cv2 as cv
 import scipy
 from scipy import ndimage
 from scipy import special
@@ -23,8 +23,9 @@ from matplotlib.patches import Wedge
 from matplotlib.collections import PatchCollection
 
 class BodyMask:
-    def __init__(self, slice):
+    def __init__(self, slice, level):
         self.slicetomask = slice
+        self.level = level
 
     def mask_body(self):
         """
@@ -36,7 +37,7 @@ class BodyMask:
         :return: row click index
         """
         #sliceforcontour = self.rotvol[self.sliceind.astype(int), :, :]
-        edges = measure.find_contours(self.slicetomask, level=-250, fully_connected='low',
+        edges = measure.find_contours(self.slicetomask, level=self.level, fully_connected='low',
                                            positive_orientation='high') # marching square algorithm
         bodycontour = self.find_body(edges)
         body = self.create_mask_from_polygon(self.slicetomask, bodycontour)
@@ -100,7 +101,7 @@ class BodyMask:
 
 
 lstFilesDCM = []  # create an empty list
-for dirName, subdirList, fileList in os.walk('/Users/nivravhon/CT Scans for AngleSimulation/CT scans from Eric'):
+for dirName, subdirList, fileList in os.walk('CT scans from Eric'):
     for filename in fileList:
         if ".dcm" in filename.lower():  # check whether the file's DICOM
             lstFilesDCM.append(os.path.join(dirName, filename))
@@ -379,7 +380,7 @@ def find_high_Patient_volume_slice(vol):
 def row_and_col_indices_for_volume_cutting(vol, largest_slice_ind, row_addition, column_addition):
     s = time.time()
     # Create a boolian mask from the largest body volume slice
-    body = BodyMask(vol[largest_slice_ind, :, :])
+    body = BodyMask(vol[largest_slice_ind, :, :], -250)
     bodymask = body.mask_body()
     # Within that slice find the rows and columns that delimit the patient body
     first_row_volume_encounter = np.min([i for i in first_nonzero(bodymask, 0) if i > 0])
@@ -516,9 +517,9 @@ def find_cone_crit_indices(imageshape, rowind, columnind):
     rotmat = ndimage.rotate(simarray, float(-anglewillclick), reshape=False, mode='constant', cval=0)
 
     # Create a binary image after rotation with threshold of 0.1.
-    binary_image = cv2.threshold(rotmat, 0.1, 1, cv2.THRESH_BINARY)[1]
+    binary_image = cv.threshold(rotmat, 0.1, 1, cv.THRESH_BINARY)[1]
     # Finding clusters and assigning each cluster a number.
-    num_labels, labels_im = cv2.connectedComponents(binary_image.astype(np.uint8) * 255)
+    num_labels, labels_im = cv.connectedComponents(binary_image.astype(np.uint8) * 255)
 
     idxs = []
     # find the max value in each cluster and returning its index
@@ -533,6 +534,105 @@ def find_cone_crit_indices(imageshape, rowind, columnind):
 # not used in the current settings
 
 
+def show_slice_window(slice, level, window):
+   """
+   Function to display an image slice
+   Input is a numpy 2D array
+   """
+   slice_try = slice[slice > 300]
+   max = level + window/2
+   min = level - window/2
+   slice = slice.clip(min, max)
+   #plt.figure()
+   #plt.imshow(slice, cmap="gray", origin="lower")
+   #plt.savefig('L'+str(level)+'W'+str(window))
+   return slice
+
+
+def intensity_seg(slice, level, window):
+   clipped = show_slice_window(slice, level, window)
+   return measure.find_contours(clipped, level=300), clipped
+
+def display(img, contours):
+    # Display the image and plot all contours found
+    fig, ax = plt.subplots()
+    ax.imshow(img,'gray',vmin=0,vmax=255)
+
+    for contour in contours:
+        ax.plot(contour[:, 1], contour[:, 0], linewidth=2)
+
+    plt.show()
+
+
+def bone_binary_mask(slice, thresh):
+    """
+    finds the bone material in a 2d image. plot the image to the screen.
+    :param slice: CT scan slice for bone detection.
+    :return: binary mask with areas where bone is in the image.
+    """
+    #bone masking
+    gray_scale_slice = gray_scale(slice)
+    ret2, thresh2 = cv.threshold(gray_scale_slice, thresh, 255, cv.THRESH_BINARY_INV)
+    if thresh == 127:
+        thresh2_bool = thresh2 == 0
+        thresh2_binary = thresh2_bool.astype(int)
+        mask = ndimage.binary_fill_holes(thresh2_binary).astype(int)
+        return mask
+    return thresh2
+
+
+def gray_scale(image):
+    """
+    Convert any image to gray scale image.
+    For this function to work as wanted we need to use the raw ct data before converting to HU.
+    :param image: image
+    :return: gray scale image
+    """
+    # Step 1. Convert to float to avoid overflow or underflow losses.
+    img_2d = image.astype(float)
+
+    # Step 2. Rescaling grey scale between 0-255
+    img_2d_scaled = (np.maximum(img_2d, 0) / img_2d.max()) * 255.0
+
+    # Step 3. Convert to uint
+    img_2d_scaled = np.uint8(img_2d_scaled)
+
+    return img_2d_scaled
+
+
+def threshold_option_show(gray_scale_img):
+    """
+    plots all optin for image thresholding methods with cv library.
+    :param gray_scale_img: gray scale image
+    :return: plot of threshold images
+    """
+    ret1,thresh1 = cv.threshold(gray_scale_img,50,255,cv.THRESH_BINARY)
+    ret2,thresh2 = cv.threshold(gray_scale_img,50,255,cv.THRESH_BINARY_INV)
+    ret3,thresh3 = cv.threshold(gray_scale_img,50,255,cv.THRESH_TRUNC)
+    ret4,thresh4 = cv.threshold(gray_scale_img,50,255,cv.THRESH_TOZERO)
+    ret5,thresh5 = cv.threshold(gray_scale_img,50,255,cv.THRESH_TOZERO_INV)
+    thresh2_bool = thresh2 == 0
+    thresh2_binary = thresh2_bool.astype(int)
+    filled_hols = ndimage.binary_fill_holes(thresh2_binary).astype(int)
+    titles = ['Original Image','BINARY','BINARY_INV','TRUNC','TOZERO','TOZERO_INV']
+    images = [filled_hols, thresh1, thresh2, thresh3, thresh4, thresh5]
+    plt.imshow(filled_hols)
+
+    for i in range(6):
+        plt.subplot(2,3,i+1),plt.imshow(images[i],'gray',vmin=0,vmax=255)
+        plt.title(titles[i])
+        plt.xticks([]),plt.yticks([])
+
+    plt.show()
+
+    return thresh1, thresh2, thresh3, thresh4, thresh5
+
+
+def boby_segments_cone_interaction(mask, slice, cone_vol):
+    cone_hitting_spots = mask * cone_vol[slice, :, :]
+    return cone_hitting_spots
+
+
 # clicked point parameters for cone calculaiton
 R = 44 #mm
 distfromskin = 13 #mm
@@ -541,10 +641,18 @@ skintotargetcenter = 70.5 #mm
 skintolowertarget = 94 #mm
 clickedsliceind = 60
 clickpointcolumn = 239
-anglewillclick = 0
+anglewillclick = 25
+# cv2 thresh value for cv2.threshold method
+bone_thresh = 127
+skin_thresh = 50
+bone_thresh_type = cv.THRESH_BINARY_INV
+skin_thresh_type = cv.THRESH_BINARY
+
+
 
 # Affine Matrix
 AffinMatrix = a_multi_matrix()
+
 
 
 row_vol_increase = 100
@@ -557,9 +665,11 @@ chopedvol, row_movment, column_movment = row_and_col_indices_for_volume_cutting(
 
 # calculation for rotated volume with cone
 data_vol_rot = volume_rotation(chopedvol, anglewillclick)
+
 edges = measure.find_contours(data_vol_rot[clickedsliceind, :, :], level=-250, fully_connected='low', positive_orientation='high')
 bodycontour = find_body(edges)
 body = create_mask_from_polygon(data_vol_rot[clickedsliceind, :, :], bodycontour)
+
 clickedslice = data_vol_rot[clickedsliceind, :, :]
 rowind = np.argwhere(body[:, clickpointcolumn] == 1)[0]
 rotconeind = find_cone_crit_indices(clickedslice.shape, rowind, clickpointcolumn)
@@ -574,9 +684,84 @@ uppercone = cone(upperapexpoint, centerbasepoint, 0, R)
 centercone = cone(centeralapexpoint, centerbasepoint, 0, R)
 lowercone = cone(lowerapexpoint, centerbasepoint, 0, R)
 
+cone_vol = np.zeros(chopedvol.shape)
+
+cone_vol[uppercone[:, 2].astype(int), uppercone[:, 0].astype(int), uppercone[:, 1].astype(int)] = 1
+cone_vol[centercone[:, 2].astype(int), centercone[:, 0].astype(int), centercone[:, 1].astype(int)] = 1
+cone_vol[lowercone[:, 2].astype(int), lowercone[:, 0].astype(int), lowercone[:, 1].astype(int)] = 1
+
+# Find cone top spikes at each slice
+left_cone_column_peak = first_nonzero(cone_vol[clickedsliceind, :, :], 1, invalid_val=-1)
+left_side_cone_column = np.min(left_cone_column_peak[left_cone_column_peak > 0])
+right_side_cone_column = np.max(last_nonzero(cone_vol[clickedsliceind, :, :], 1, invalid_val=-1))
+
+left_cone_row = np.where(cone_vol[clickedsliceind, :, left_side_cone_column] == 1)[0][0]
+right_cone_row = np.where(cone_vol[clickedsliceind, :, right_side_cone_column] == 1)[0][0]
+
+
+
+
+chopedvol = np.divide(chopedvol - int(RefDsFirst.RescaleIntercept), int(RefDsFirst.RescaleSlope))
+#img = gray_scale(chopedvol[clickedsliceind, :, :])
+#threshold_option_show(img)
+
+#img = gray_scale(chopedvol[clickedsliceind, :, :])
+#threshold_option_show(img)
+s = time.time()
+bone_mask = bone_binary_mask(chopedvol[clickedsliceind, :, :], bone_thresh)
+skin_mask = bone_binary_mask(chopedvol[clickedsliceind, :, :], skin_thresh)
+
+bone_cone = boby_segments_cone_interaction(bone_mask, clickedsliceind, cone_vol)
+skin_cone = boby_segments_cone_interaction(skin_mask, clickedsliceind, cone_vol)
+
+if skin_cone[left_side_cone_column, left_cone_row] == 0:
+    cone_edge_left = plt.Circle((left_side_cone_column, left_cone_row), 10, color='r', fill=False)
+if skin_cone[right_side_cone_column, right_cone_row] == 0:
+    cone_edge_right = plt.Circle((right_side_cone_column, right_cone_row), 10, color='r', fill=False)
+
+e = time.time()
 chopedvol[uppercone[:, 2].astype(int), uppercone[:, 0].astype(int), uppercone[:, 1].astype(int)] = 6000
 chopedvol[centercone[:, 2].astype(int), centercone[:, 0].astype(int), centercone[:, 1].astype(int)] = 6000
 chopedvol[lowercone[:, 2].astype(int), lowercone[:, 0].astype(int), lowercone[:, 1].astype(int)] = 6000
+print('masking time', e-s)
+
+
+'''
+num_labels, labels_im = cv.connectedComponents(skin_cone.astype(np.uint8) * 255)
+print(num_labels)
+#if num_labels < 3:
+cone_left_edges = np.where(labels_im == 1)
+cone_edge_left = plt.Circle((cone_left_edges[1][0], cone_left_edges[0][0]), 10, color='r', fill=False)
+cone_right_edges = np.where(labels_im == 2)
+cone_edge_right = plt.Circle((cone_right_edges[1][0], cone_right_edges[0][0]), 10, color='r', fill=False)
+'''
+'''
+titles = ['Bone-Cone interaction','Bone Mask','CT Image with cone','Skin-Cone interaction','Skin Mask','Cone']
+images = [bone_cone, bone_mask, chopedvol[clickedsliceind, :, :], skin_cone, skin_mask, cone_vol[clickedsliceind, :, :]]
+for i in range(6):
+    plt.subplot(2,3,i+1),plt.imshow(images[i], 'gray', vmin=0, vmax=255)
+    plt.title(titles[i])
+    plt.xticks([]), plt.yticks([])
+
+plt.show()
+'''
+fig, ((ax1, ax2, ax3), (ax4, ax5, ax6)) = plt.subplots(2, 3)
+bone_cone_plt = ax1.imshow(bone_cone, cmap='gray')
+ax1.set_title('Bone-Cone interaction')
+bone = ax2.imshow(bone_mask, cmap='gray')
+ax2.set_title('Bone Mask')
+ct_cone_plt = ax3.imshow(chopedvol[clickedsliceind, :, :], cmap='gray')
+ax3.set_title('CT Image with cone')
+ax3.add_patch(cone_edge_left)
+ax3.add_patch(cone_edge_right)
+skin_cone_plt = ax4.imshow(skin_cone, cmap='gray')
+ax4.set_title('Skin-Cone interaction')
+skin = ax5.imshow(skin_mask, cmap='gray')
+ax5.set_title('Skin Mask')
+cone_slice = ax6.imshow(cone_vol[clickedsliceind, :, :], cmap='gray')
+ax6.set_title('Cone')
+plt.show()
+
 
 '''
 # cone integration for rotated images
@@ -609,9 +794,10 @@ AxialSlider.on_changed(update_slider_axial)
 rotvolimage = ax1.imshow(rotated_data_vol_with_cone[clickedsliceind, :, :], cmap='gray')
 correctnot_rot_vol = ax2.imshow(ndimage.rotate(rotated_data_vol_with_cone[clickedsliceind, :, :], float(-anglewillclick), reshape=False, mode='constant', cval=-1000), cmap='gray')
 '''
-fig, ax = plt.subplots()
-notrotvolimage = ax.imshow(chopedvol[clickedsliceind, :, :], cmap='gray')
-posAxial = ax.get_position()
+fig, (ax1, ax2) = plt.subplots(1, 2)
+
+notrotvolimage = ax1.imshow(chopedvol[clickedsliceind, :, :], cmap='gray')
+posAxial = ax1.get_position()
 axAxial_slide = plt.axes([posAxial.x0, posAxial.y0-0.1, 0.2, 0.01])  # Slider position
 AxialSlider = Slider(axAxial_slide, '', valmin=0, valmax=chopedvol.shape[0]-1, valstep=1, valinit=chopedvol.shape[0]/2,
                                     orientation='horizontal')  # slider range
@@ -619,6 +805,9 @@ AxialSlider.valtext.set_visible(True)
 #AxialSlider.label.set_color('black')
 #AxialSlider.valtext.set_color('black')
 AxialSlider.on_changed(update_slider_axial)
+body_contour = BodyMask(chopedvol[clickedsliceind, :, :], 300)
+body = body_contour.mask_body()
+contour = ax2.imshow(body, cmap='gray')
 plt.show()
 
 
